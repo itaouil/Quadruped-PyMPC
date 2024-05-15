@@ -21,6 +21,4 @@ dependencies:
 - colcon-common-extensions 
 - catkin_tools 
 - rosdep
-- pip:
-  - mujoco
-
+- mujoco

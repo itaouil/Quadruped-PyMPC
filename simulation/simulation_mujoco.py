@@ -2,6 +2,12 @@
 
 # Authors: Giulio Turrisi -
 
+# import acados
+from joblib import Parallel, delayed
+
+from multiprocessing import Pool
+
+
 import mujoco.viewer
 import mujoco
 import matplotlib.pyplot as plt
@@ -294,7 +300,7 @@ use_visualization_debug = config.simulation_params['use_visualization_debug']
 
 
 # Main simulation loop ------------------------------------------------------------------
-with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False) as viewer:
+with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) as viewer:
     mujoco.mjv_defaultFreeCamera(m, viewer.cam)
     viewer.user_scn.flags[mujoco.mjtRndFlag.mjRND_SHADOW] = 0
     viewer.user_scn.flags[mujoco.mjtRndFlag.mjRND_REFLECTION] = 0
@@ -311,7 +317,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
         linear_vel = d.qvel[0:3]
         angular_vel = copy.deepcopy(d.qvel[3:6])
 
-
         state_current = {
             'position': com_pos,
             'linear_velocity': linear_vel,
@@ -323,12 +328,9 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
             'foot_RR': d.geom_xpos[RR_id]
         }
 
-
-
         if(use_print_debug): 
             print("state_current: ")
             pprint.pprint(state_current)
-        
         # -------------------------------------------------------
 
         # Update the contact sequence ---------------------------
@@ -336,6 +338,8 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
             contact_sequence = np.ones((4, horizon)) 
         else:
             contact_sequence = pgg.compute_contact_sequence(mpc_dt=mpc_dt, simulation_dt=simulation_dt)
+
+            print("Contact sequence: \n", contact_sequence)
             
             
 
@@ -345,8 +349,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
         if(use_print_debug): 
             print("contact_sequence: \n", contact_sequence)
         # -------------------------------------------------------
-
-
 
         # Compute the reference for the footholds ---------------------------------------------------
         FL_hip_id = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, 'FL_hip')
@@ -385,7 +387,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
             print("reference_state: ")
             pprint.pprint(reference_state)
         # -------------------------------------------------------------------------------------------------
-
         
         if(config.mpc_params['type'] == 'sampling'):
             if(config.mpc_params['shift_solution']):
@@ -479,6 +480,11 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
             else:
 
                 time_start = time.time()
+
+                start = time.time()
+
+                controller.compute_batch_control(state_current, reference_state, contact_sequence, inertia=inertia.flatten())
+
                 nmpc_GRFs, \
                 nmpc_footholds, \
                 nmpc_predicted_state, \
@@ -758,7 +764,7 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=False, show_right_ui=False)
                 time.sleep(time_until_next_step)
         
          
-        print("loop time: ", time.time() - step_start)
+        # print("loop time: ", time.time() - step_start)
         # ---------------------------------------------------------------------------------------------------
 
         i = i + 1
