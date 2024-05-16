@@ -211,6 +211,8 @@ Eigen::MatrixXi MCTS::run(const int max_iter, const std::vector<int>& fixed_cont
     Eigen::MatrixXi l_contact_sequence = scaleConverter(0.04, m_tree_dt, state2Binary(getCurrentSeq(last_node)));
     std::cout << "MPC contact sequence: \n" << l_contact_sequence << std::endl;
 
+    std::cout << "Total number of nodes: " << tree_.size() << std::endl;
+
     return l_contact_sequence;
 };
 
@@ -219,23 +221,29 @@ Eigen::MatrixXi MCTS::run(const int max_iter, const std::vector<int>& fixed_cont
  *
  * @param state
  * @param reference
+ * @param swing_time
+ * @param stance_time
  */
-void MCTS::setCurrentState(const py::dict state, const py::dict reference) {
+void MCTS::setCurrentState(const py::dict state, 
+                           const py::dict reference, 
+                           const int contact, 
+                           const Eigen::VectorXf &swing_time, 
+                           const Eigen::VectorXf &stance_time) {
     py::gil_scoped_acquire acquire;
 
-    current_state_.contact_ = state["contact"].cast<int>();
-    current_state_.swing_time_ = state["swing_time"].cast<Eigen::VectorXd>();
-    current_state_.stance_time_ = state["stance_time"].cast<Eigen::VectorXd>();
+    current_state_.contact_ = contact;
+    current_state_.swing_time_ = swing_time;
+    current_state_.stance_time_ = stance_time;
 
-    current_state_.position_ = state["position"].cast<Eigen::Vector3d>();
-    current_state_.orientation_ = state["orientation"].cast<Eigen::Vector3d>();
-    current_state_.linear_velocity_ = state["linear_velocity"].cast<Eigen::Vector3d>();
-    current_state_.angular_velocity_ = state["angular_velocity"].cast<Eigen::Vector3d>();
+    current_state_.position_ = state["position"].cast<Eigen::Vector3f>();
+    current_state_.orientation_ = state["orientation"].cast<Eigen::Vector3f>();
+    current_state_.linear_velocity_ = state["linear_velocity"].cast<Eigen::Vector3f>();
+    current_state_.angular_velocity_ = state["angular_velocity"].cast<Eigen::Vector3f>();
 
-    current_state_.ref_position = reference["ref_position"].cast<Eigen::Vector3d>();
-    current_state_.ref_orientation_ = reference["ref_orientation"].cast<Eigen::Vector3d>();
-    current_state_.ref_linear_velocity_ = reference["ref_linear_velocity"].cast<Eigen::Vector3d>();
-    current_state_.ref_angular_velocity_ = reference["ref_angular_velocity"].cast<Eigen::Vector3d>();
+    current_state_.ref_position = reference["ref_position"].cast<Eigen::Vector3f>();
+    current_state_.ref_orientation_ = reference["ref_orientation"].cast<Eigen::Vector3f>();
+    current_state_.ref_linear_velocity_ = reference["ref_linear_velocity"].cast<Eigen::Vector3f>();
+    current_state_.ref_angular_velocity_ = reference["ref_angular_velocity"].cast<Eigen::Vector3f>();
 
     m_state = state;
     m_reference = reference;
@@ -339,7 +347,7 @@ int MCTS::treePolicy() {
     std::uniform_real_distribution<float> l_dist_epsilon{0.0, 1.0};
     float l_epsilon = l_dist_epsilon(m_mt);
 
-    for (int idx{1}; idx < tree_.size(); idx++) {
+    for (int idx{0}; idx < tree_.size(); idx++) {
         // if (l_epsilon > 0.8) {
         //     if (!tree_[idx].children_.empty() && !isLeafNode(idx)) {
         //         return idx;
@@ -355,16 +363,30 @@ int MCTS::treePolicy() {
             min_cost_idx = idx;
         }
 
-        for (int leg{0}; leg < m_legs; leg++) {
-            if (tree_[tree_[idx].parent_].swing_time_[leg] == m_min_swing_time && tree_[tree_[idx].parent_].contact_ == 9 || tree_[tree_[idx].parent_].contact_ == 6) {
-                int step = getCurrentSeq(idx).size();
+        std::cout << "Tree node: " << idx << std::endl;
+        std::cout << "Tree cost: " << tree_[idx].cost_ << std::endl;
+        std::cout << "Node contact: " << tree_[idx].contact_ << std::endl;
+        std::cout << "Node swing time: " << tree_[idx].swing_time_[0] << ", " 
+                                         << tree_[idx].swing_time_[1] << ", "
+                                         << tree_[idx].swing_time_[2] << ", "
+                                         << tree_[idx].swing_time_[3] << std::endl;
+        std::cout << "Node stance time: " << tree_[idx].stance_time_[0] << ", " 
+                                         << tree_[idx].stance_time_[1] << ", "
+                                         << tree_[idx].stance_time_[2] << ", "
+                                         << tree_[idx].stance_time_[3] << std::endl;
+        
+        std::cout << "\n" << std::endl;
 
-                if (step >= 10)
-                    std::cout << "Step: " << getCurrentSeq(idx).size() << "  Cost: " << tree_[idx].cost_ << std::endl;
-                else
-                    std::cout << "Step: " << getCurrentSeq(idx).size() << "   Cost: " << tree_[idx].cost_ << std::endl;
-            }
-        }
+        // for (int leg{0}; leg < m_legs; leg++) {
+        //     if (tree_[tree_[idx].parent_].swing_time_[leg] == m_min_swing_time && tree_[tree_[idx].parent_].contact_ == 9 || tree_[tree_[idx].parent_].contact_ == 6) {
+        //         int step = getCurrentSeq(idx).size();
+
+        //         if (step >= 10)
+        //             std::cout << "Step: " << getCurrentSeq(idx).size() << "  Cost: " << tree_[idx].cost_ << std::endl;
+        //         else
+        //             std::cout << "Step: " << getCurrentSeq(idx).size() << "   Cost: " << tree_[idx].cost_ << std::endl;
+        //     }
+        // }
     }
     // std::cout << "=============================================" << std::endl;
 
@@ -490,9 +512,12 @@ int MCTS::constraintViolation(const int &contact, const float &swing_time, const
  */
 std::vector<float> MCTS::solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts) {
     try {
+        auto start = std::chrono::steady_clock::now();
         // Compute costs for the rollouts
         py::object result = m_nmpc_instance.attr("ocp_batch_solver")(m_state, m_reference, rollouts);
         std::vector<float> ocp_costs = result.cast<std::vector<float>>();
+        auto end = std::chrono::steady_clock::now();
+        std::cout << "Time taken by solveOCPs call: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms" << std::endl;
 
         // // Print the ocp costs obtained matrix
         // for (const auto& cost : ocp_costs) {
@@ -516,13 +541,13 @@ void MCTS::simulationPolicy(const int node_idx) {
         tree_[node_idx].cost_ = tree_[tree_[node_idx].parent_].cost_ - 0.1;
         return;
     }
-
-    // Clear previous batch of evaluated contact sequences
-    std::vector<Eigen::MatrixXi> l_rollouts{};
     
     bool l_first_node{true};
     
     for (int idx_sim{node_idx}; idx_sim < tree_.size(); idx_sim++) {
+        // Node’s rollouts
+        std::vector<Eigen::MatrixXi> l_rollouts{};
+
         // Compute value function cost using NN if this one is enabled
         float l_value_function_cost{0};
         if (m_use_value_function) {
@@ -618,7 +643,7 @@ void MCTS::simulationPolicy(const int node_idx) {
         // for (int x{0}; x < m_tree_horizon; x++) {
         //     l_full_stance_seq.push_back(15);
         // }
-        // l_rollouts.push_back(l_full_stance_seq);
+        // l_rollouts.push_back(state2Binary(l_full_stance_seq));
 
         // Solve the OCPs in batch
         std::vector<float> l_rollout_costs = solveOCPs(l_rollouts);

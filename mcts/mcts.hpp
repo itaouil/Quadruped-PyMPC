@@ -48,8 +48,10 @@ public:
      *
      * @param state
      * @param reference
+     * @param swing_time
+     * @param stance_time
      */
-    void setCurrentState(const py::dict state, const py::dict reference);
+    void setCurrentState(const py::dict state, const py::dict reference, const int contact, const Eigen::VectorXf &swing_time, const Eigen::VectorXf &stance_time);
                          
     /**
      * Bundle and return the values used
@@ -70,9 +72,9 @@ private:
     Eigen::Matrix<float,3,4> m_touchdowns;
 
     // Whether to use policies or not
-    bool m_use_action_policy;
-    bool m_use_value_function;
-    bool m_only_imitation_learning;
+    bool m_use_action_policy{false};
+    bool m_use_value_function{false};
+    bool m_only_imitation_learning{false};
 
     // Current state of the system
     State current_state_{};
@@ -118,7 +120,7 @@ private:
 
     // Swinging times parameters
     float m_max_swing_time{0.4};
-    float m_min_swing_time{0.4};
+    float m_min_swing_time{0.2};
     float m_min_stance_time{0.2};
 
     // Number of computations

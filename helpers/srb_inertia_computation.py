@@ -17,11 +17,13 @@ import config
 class SrbInertiaComputation:
     def __init__(self, ) -> None:
         if(config.robot == 'go2'):
-            urdf_filename = dir_path + '/../simulation/robot_model/unitree_go2/go2.urdf' 
+            urdf_filename = dir_path + '/../simulation/robot_model/go2/go2.urdf' 
         elif(config.robot == 'aliengo'):
             urdf_filename = dir_path + '/../simulation/robot_model/aliengo/aliengo.urdf'
         elif(config.robot == 'hyqreal'):
             urdf_filename = dir_path + '/../simulation/robot_model/hyqreal/hyqreal.urdf'
+        elif(config.robot == 'mini_cheetah'):
+            urdf_filename = dir_path + '/../simulation/robot_model/mini_cheetah/mini_cheetah.urdf'
         self.robot_full = pin.buildModelFromUrdf(urdf_filename)
 
         # Create a list of joints to lock

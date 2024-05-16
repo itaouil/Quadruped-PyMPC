@@ -6,7 +6,7 @@ import numpy as np
 
 
 # These are used both for a real experiment and a simulation -----------
-robot = 'aliengo' #'go2', 'aliengo', 'hyqreal'
+robot = 'aliengo' #'go2', 'aliengo', 'hyqreal', 'mini_cheetah'
 
 if(robot == 'go2'):
     mass = 15.019
@@ -30,6 +30,12 @@ elif(robot == 'hyqreal'):
                         [-5.11957307e-01, -7.38560592e-04,  2.14269772e+01]])
     urdf_filename = "hyqreal.urdf"
     
+elif(robot == 'mini_cheetah'):
+    mass = 12.5
+    inertia = np.array([[ 1.58460467e-01,  1.21660000e-04, -1.55444692e-02],
+                        [ 1.21660000e-04,  4.68645637e-01, -3.12000000e-05],
+                        [-1.55444692e-02, -3.12000000e-05,  5.24474661e-01]])
+    urdf_filename = "mini_cheetah.urdf"
 
 
 mpc_params = {
@@ -41,8 +47,8 @@ mpc_params = {
     
     # horizon is the number of timesteps in the future that the mpc will optimize
     # dt is the discretization time used in the mpc
-    'horizon': 12,
-    'dt': 0.02, 
+    'horizon': 16,
+    'dt': 0.04, 
 
     # GRF limits for each single leg
     "grf_max": mass*9.81,
@@ -62,7 +68,7 @@ mpc_params = {
 
     # if this is off, the mpc will not optimize the footholds and will
     # use only the ones provided in the reference
-    'use_foothold_optimization': True,
+    'use_foothold_optimization': False,
     
     # this is set to false automatically is use_foothold_optimization is false
     # because in that case we cannot chose the footholds and foothold
@@ -77,13 +83,17 @@ mpc_params = {
     'as_rti_type': "AS-RTI-A",  # "AS-RTI-A", "AS-RTI-B", "AS-RTI-C", "AS-RTI-D", "Standard"
     'as_rti_iter': 1, # > 0, the higher the better, but slower computation!
 
+    # This will force to use DDP instead of SQP, based on https://arxiv.org/abs/2403.10115. 
+    # Note that RTI is not compatible with DDP, and no state costraints for now are considered
+    'use_DDP': False,
+
     # this is used only in the case 'use_RTI' is false in a single mpc feedback loop. 
     # More is better, but slower computation!
     'num_qp_iterations': 1,
 
     # this is used to limit the number of interior point iterations and choose
     # "speed" in hpipm. This gives a more costant solution time. 
-    'prioritize_speed': True,
+    'solver_quality': 'crazy_speed', #balance, robust, speed, crazy_speed
 
 
     # this is used to have a smaller dt near the start of the horizon 
@@ -107,12 +117,12 @@ mpc_params = {
     
     # this is used to compensate for the external wrenches
     # you should provide explicitly this value in compute_control 
-    'external_wrenches_compensation': True,
+    'external_wrenches_compensation': False,
     'external_wrenches_compensation_num_step': 15,
 
     # this is used only in the case of collaborative mpc, to 
     # compensate for the external wrench in the prediction (only collaborative)
-    'passive_arm_compensation': True,
+    'passive_arm_compensation': False,
 
     # ----- END properties for the gradient-based mpc -----
 
@@ -133,9 +143,19 @@ mpc_params = {
     
     # if this is true, sampling will be done for the step frequency as well
     'optimize_step_freq': True,
-    'step_freq_delta': [1.3, 2.0, 2.4]
+    'step_freq_delta': [1.3, 2.0, 2.4],
 
     # ----- END properties for the sampling-based mpc -----
+
+    # ----- START properties only for MCTS -----
+    
+    'use_mcts': True,
+    'num_legs': 4,
+    'tree_dt': 0.04,
+    'tree_horizon': 16,
+    'tree_simulations': 10
+    
+    # ----- END properties only for MCTS  -----
     
 }
 #-----------------------------------------------------------------------
@@ -148,6 +168,8 @@ elif(robot == 'aliengo'):
     ref_z = 0.35
 elif(robot == 'hyqreal'):
     ref_z = 0.5
+elif(robot == 'mini_cheetah'):
+    ref_z = 0.25
 
 simulation_params = {
     'swing_generator': 'explicit', #'scipy', 'explicit', 'ndcurves'
@@ -159,10 +181,10 @@ simulation_params = {
     # this is the integration time used in the simulator
     'dt': 0.002,
 
-    'gait': 'trot', #'trot', 'pace', 'crawl', 'bound', 'full_stance'
+    'gait': 'full_stance', #'trot', 'pace', 'crawl', 'bound', 'full_stance'
     
     # ref_x_dot, ref_y_dot, ref_yaw_dot are in the horizontal frame
-    'ref_x_dot': .3,
+    'ref_x_dot': 0,
     'ref_y_dot': 0.,
     'ref_yaw_dot': 0.0,
     'ref_z': ref_z, 
@@ -175,6 +197,7 @@ simulation_params = {
 
 
     'use_external_disturbances': True,
+    
     'external_disturbances_bound': [18, 18, 0, 18, 18, 18], #fx, fy, fz, mx, my, mz
 
     'use_inertia_recomputation': False,
@@ -183,6 +206,8 @@ simulation_params = {
     'use_visualization_debug': True,
 
     'use_kind_of_real_time': True,
+
+    'scene': 'flat', #flat, rough, stairs, suspend_stairs, slope, perlin, image
 
 }
 #-----------------------------------------------------------------------

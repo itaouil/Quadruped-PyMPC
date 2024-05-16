@@ -1,13 +1,6 @@
 # Description: This script is used to simulate the full model of the robot in mujoco
 
 # Authors: Giulio Turrisi -
-
-# import acados
-from joblib import Parallel, delayed
-
-from multiprocessing import Pool
-
-
 import mujoco.viewer
 import mujoco
 import matplotlib.pyplot as plt
@@ -23,6 +16,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 os.environ['XLA_FLAGS'] = ('--xla_gpu_triton_gemm_any=True')
 
 import sys
+sys.path.append(dir_path + '/../mcts/build/')
 sys.path.append(dir_path + '/../')
 sys.path.append(dir_path + '/../helpers/')
 sys.path.append(dir_path + '/../helpers/swing_generators/')
@@ -44,6 +38,8 @@ from other import euler_from_quaternion, plot_swing_mujoco, plot_state_matplotli
 # Parameters for both MPC and simulation
 import config 
 
+# Import MCTS module
+import mcts_module
 
 # Mujoco model and data
 scene = config.simulation_params['scene']
@@ -275,6 +271,15 @@ lift_off_positions[2] = copy.deepcopy(position_foot_RL)
 position_foot_RR = d.geom_xpos[RR_id]
 lift_off_positions[3] = copy.deepcopy(position_foot_RR)
 
+# MCTS module
+mcts = None
+mcts_swing_period = [1, 1, 1, 1]
+if config['use_mcts']:
+    mcts = mcts_module.MCTS(config['tree_dt'],
+                            config['tree_horizon'],
+                            config['tree_simulations'],
+                            config['num_legs'], 
+                            False, False, False)
 
 # Online computation of the inertia parameter
 srb_inertia_computation = SrbInertiaComputation()
@@ -336,13 +341,14 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         # -------------------------------------------------------
 
         # Update the contact sequence ---------------------------
-        if(gait == "full_stance"):
-            contact_sequence = np.ones((4, horizon)) 
+        if mcts:
+            mcts.set_current_state(state_current, reference_state, current_contact, swing_time, stance_time)
+            contact_sequence = mcts.run(100, [])
         else:
-            contact_sequence = pgg.compute_contact_sequence(mpc_dt=mpc_dt, simulation_dt=simulation_dt)
-
-            print("Contact sequence: \n", contact_sequence)
-            
+            if(gait == "full_stance"):
+                contact_sequence = np.ones((4, horizon)) 
+            else:
+                contact_sequence = pgg.compute_contact_sequence(mpc_dt=mpc_dt, simulation_dt=simulation_dt)
             
 
         previous_contact = copy.deepcopy(current_contact)
@@ -405,103 +411,25 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
             if(config.simulation_params['use_inertia_recomputation']):
                 inertia = srb_inertia_computation.compute_inertia(d.qpos[3:])
             
-            # If we use sampling
-            if(config.mpc_params['type'] == 'sampling'):
+            time_start = time.time()
 
-                time_start = time.time()
-                # Convert data to jax
-                state_current_jax, \
-                reference_state_jax, \
-                best_control_parameters = jitted_prepare_state_and_reference(state_current, reference_state, best_control_parameters, current_contact, previous_contact_mpc)
+            start = time.time()
 
+            nmpc_GRFs, \
+            nmpc_footholds, \
+            nmpc_predicted_state, \
+            status = controller.compute_control(state_current, reference_state, contact_sequence, inertia=inertia.flatten())
 
-                # we can always optimize the step freq, or just at the apex of the swing
-                # to avoid possible jittering in the solution
-                optimize_swing = 0 #1 for always, 0 for apex
-                for leg in range(4):
-                # Swing time check 
-                    if(current_contact[leg] == 0):
-                        if ((swing_time[leg] > (swing_period/2.) - 0.02) and \
-                            (swing_time[leg] < (swing_period/2.) + 0.02)):
-                            optimize_swing = 1
-                            nominal_sample_freq = step_frequency
-                            
+            optimizer_cost = controller.acados_ocp_solver.get_cost()
 
-                for iter_sampling in range(iteration):
-                    if(config.mpc_params['sampling_method'] == 'cem_mppi'):
-                        if(iter_sampling == 0):
-                            controller = controller.with_newsigma(config.mpc_params['sigma_cem_mppi'])
-                        nmpc_GRFs, \
-                        nmpc_footholds, \
-                        best_control_parameters, \
-                        best_cost, \
-                        best_sample_freq, \
-                        costs, \
-                        sigma_cem_mppi = jitted_compute_control(state_current_jax, reference_state_jax, 
-                                                                contact_sequence, best_control_parameters, 
-                                                                controller.master_key, controller.sigma_cem_mppi)
-                        controller = controller.with_newsigma(sigma_cem_mppi)
-                    else:
-                        nmpc_GRFs, \
-                        nmpc_footholds, \
-                        best_control_parameters, \
-                        best_cost, \
-                        best_sample_freq, \
-                        costs = jitted_compute_control(state_current_jax, reference_state_jax, contact_sequence, 
-                                                       best_control_parameters, controller.master_key, pgg.get_t(),
-                                                       nominal_sample_freq, optimize_swing)
-                    
-
-                    controller = controller.with_newkey()
-                
-
-                if((config.mpc_params['optimize_step_freq']) and (optimize_swing == 1)):
-                    pgg.step_freq = np.array([best_sample_freq])[0]
-                    nominal_sample_freq = pgg.step_freq
-                    stance_time = (1/pgg.step_freq) * duty_factor
-                    frg.stance_time = stance_time
-                    
-                    swing_period = (1 - duty_factor) * (1 / pgg.step_freq) + 0.07
-                    stc.regenerate_swing_trajectory_generator(step_height=step_height, swing_period=swing_period)
-
-
-                nmpc_footholds = np.zeros((4,3))
-                nmpc_footholds[0] = reference_state["ref_foot_FL"]
-                nmpc_footholds[1] = reference_state["ref_foot_FR"]
-                nmpc_footholds[2] = reference_state["ref_foot_RL"]
-                nmpc_footholds[3] = reference_state["ref_foot_RR"]
-        
-                nmpc_GRFs = np.array(nmpc_GRFs)
-
-                previous_contact_mpc = copy.deepcopy(current_contact)
-                index_shift = 0
-                optimizer_cost = best_cost
-            
-
-            # If we use Gradient-Based MPC
-            else:
-
-                time_start = time.time()
-
-                start = time.time()
-
-                controller.compute_batch_control(state_current, reference_state, contact_sequence, inertia=inertia.flatten())
-
-                nmpc_GRFs, \
-                nmpc_footholds, \
-                nmpc_predicted_state, \
-                status = controller.compute_control(state_current, reference_state, contact_sequence, inertia=inertia.flatten())
-
-                optimizer_cost = controller.acados_ocp_solver.get_cost()
-                    
-                # If the controller is using RTI, we need to linearize the mpc after its computation
-                # this helps to minize the delay between new state->control, but only in a real case. 
-                # Here we are in simulation and does not make any difference for now
-                if(controller.use_RTI):
-                    # preparation phase
-                    controller.acados_ocp_solver.options_set('rti_phase', 1)
-                    status = controller.acados_ocp_solver.solve()
-                    print("preparation phase time: ", controller.acados_ocp_solver.get_stats('time_tot'))
+            # If the controller is using RTI, we need to linearize the mpc after its computation
+            # this helps to minize the delay between new state->control, but only in a real case. 
+            # Here we are in simulation and does not make any difference for now
+            if(controller.use_RTI):
+                # preparation phase
+                controller.acados_ocp_solver.options_set('rti_phase', 1)
+                status = controller.acados_ocp_solver.solve()
+                print("preparation phase time: ", controller.acados_ocp_solver.get_stats('time_tot'))
             
             
             
