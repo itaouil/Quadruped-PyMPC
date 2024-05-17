@@ -51,7 +51,7 @@ public:
      * @param swing_time
      * @param stance_time
      */
-    void setCurrentState(const py::dict state, const py::dict reference, const int contact, const Eigen::VectorXf &swing_time, const Eigen::VectorXf &stance_time);
+    void setCurrentState(const py::dict state, const py::dict reference, const Eigen::VectorXi &contact, const Eigen::VectorXf &swing_time, const Eigen::VectorXf &stance_time);
                          
     /**
      * Bundle and return the values used

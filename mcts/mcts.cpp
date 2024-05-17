@@ -226,14 +226,14 @@ Eigen::MatrixXi MCTS::run(const int max_iter, const std::vector<int>& fixed_cont
  */
 void MCTS::setCurrentState(const py::dict state, 
                            const py::dict reference, 
-                           const int contact, 
+                           const Eigen::VectorXi &contact, 
                            const Eigen::VectorXf &swing_time, 
                            const Eigen::VectorXf &stance_time) {
     py::gil_scoped_acquire acquire;
 
-    current_state_.contact_ = contact;
     current_state_.swing_time_ = swing_time;
     current_state_.stance_time_ = stance_time;
+    current_state_.contact_ = binary2Decimal(contact);
 
     current_state_.position_ = state["position"].cast<Eigen::Vector3f>();
     current_state_.orientation_ = state["orientation"].cast<Eigen::Vector3f>();
@@ -536,7 +536,7 @@ std::vector<float> MCTS::solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts)
  * @param node_idx
  */
 void MCTS::simulationPolicy(const int node_idx) {
-    if (m_only_imitation_learning || tree_[tree_[node_idx].parent_].children_.size() == 1) {
+    if (m_only_imitation_learning || tree_.size() - node_idx == 1) {
         tree_[node_idx].n_visit_ += 1;
         tree_[node_idx].cost_ = tree_[tree_[node_idx].parent_].cost_ - 0.1;
         return;

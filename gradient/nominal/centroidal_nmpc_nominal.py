@@ -68,7 +68,7 @@ class Acados_NMPC_Nominal:
         )
 
         # Batch solver
-        self.batch = 11
+        self.batch = 10
         self.num_threads = 5
         self.batch_solver = AcadosOcpBatchSolver(self.create_ocp_solver_description(acados_model), self.batch, verbose=True)
 
@@ -264,6 +264,7 @@ class Acados_NMPC_Nominal:
         #ocp.solver_options.nlp_solver_ext_qp_res = 1
         ocp.solver_options.levenberg_marquardt = 1e-3
         ocp.solver_options.num_threads_in_batch_solve = 10
+        ocp.solver_options.print_level = 0 
 
         # Set prediction horizon
         ocp.solver_options.tf = self.T_horizon
@@ -1847,7 +1848,6 @@ class Acados_NMPC_Nominal:
                 self.integral_errors[5] = np.where(np.abs(self.integral_errors[5]) > cap_integrator_pitch, cap_integrator_pitch*np.sign(self.integral_errors[5]), self.integral_errors[5])
 
                 print("self.integral_errors: ", self.integral_errors)
-
 
             # Set initial state constraint acados, converting first the dictionary to np array
             state_acados = np.concatenate((state["position"], state["linear_velocity"],

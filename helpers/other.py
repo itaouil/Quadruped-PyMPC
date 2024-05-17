@@ -58,10 +58,10 @@ def plot_swing_mujoco(mujoco, stc, swing_period, lift_off_positions, nmpc_footho
     j = 0
     for foot_swing_time in np.arange(0.000001, swing_period, 0.002):
         if(j % 20 == 0):
-            desired_foot_swing_FL, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, lift_off_positions[0], nmpc_footholds[0])
-            desired_foot_swing_FR, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, lift_off_positions[1], nmpc_footholds[1])
-            desired_foot_swing_RL, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, lift_off_positions[2], nmpc_footholds[2])
-            desired_foot_swing_RR, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, lift_off_positions[3], nmpc_footholds[3])
+            desired_foot_swing_FL, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, swing_period, lift_off_positions[0], nmpc_footholds[0])
+            desired_foot_swing_FR, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, swing_period, lift_off_positions[1], nmpc_footholds[1])
+            desired_foot_swing_RL, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, swing_period, lift_off_positions[2], nmpc_footholds[2])
+            desired_foot_swing_RR, _, _ = stc.swing_generator.compute_trajectory_references(foot_swing_time, swing_period, lift_off_positions[3], nmpc_footholds[3])
             desired_foot_swing = np.array([desired_foot_swing_FL, desired_foot_swing_FR, desired_foot_swing_RL, desired_foot_swing_RR])
             mujoco.mjv_initGeom(
                 viewer.user_scn.geoms[i],

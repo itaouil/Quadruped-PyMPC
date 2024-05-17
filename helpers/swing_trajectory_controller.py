@@ -27,7 +27,7 @@ class SwingTrajectoryController:
             self.swing_generator = SwingTrajectoryGenerator(swing_period=swing_period, step_height=step_height)
         elif(self.generator == "scipy"):
             from scipy_swing_trajectory_generator import SwingTrajectoryGenerator
-            self.swing_generator = SwingTrajectoryGenerator(swing_period=swing_period, step_height=step_height)
+            self.swing_generator = SwingTrajectoryGenerator(step_height=step_height)
         else:
             from explicit_swing_trajectory_generator import SwingTrajectoryGenerator
             self.swing_generator = SwingTrajectoryGenerator(swing_period=swing_period, step_height=step_height)
@@ -62,11 +62,12 @@ class SwingTrajectoryController:
                               foot_position,
                               foot_velocity,
                               h,
-                              mass_matrix):
+                              mass_matrix,
+                              swing_period):
         # Compute trajectory references
         desired_foot_position, \
         desired_foot_velocity, \
-        desired_foot_acceleration = self.swing_generator.compute_trajectory_references(swing_time, lift_off, touch_down)
+        desired_foot_acceleration = self.swing_generator.compute_trajectory_references(swing_time, swing_period, lift_off, touch_down)
 
 
         error_position = desired_foot_position - foot_position

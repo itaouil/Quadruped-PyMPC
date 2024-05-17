@@ -93,7 +93,7 @@ mpc_params = {
 
     # this is used to limit the number of interior point iterations and choose
     # "speed" in hpipm. This gives a more costant solution time. 
-    'solver_quality': 'crazy_speed', #balance, robust, speed, crazy_speed
+    'solver_mode': 'crazy_speed', #balance, robust, speed, crazy_speed
 
 
     # this is used to have a smaller dt near the start of the horizon 
@@ -146,7 +146,9 @@ mpc_params = {
     'step_freq_delta': [1.3, 2.0, 2.4],
 
     # ----- END properties for the sampling-based mpc -----
+}
 
+mcts_params = {
     # ----- START properties only for MCTS -----
     
     'use_mcts': True,

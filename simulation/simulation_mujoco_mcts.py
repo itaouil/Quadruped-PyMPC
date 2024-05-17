@@ -236,10 +236,10 @@ reference_state = {'ref_position': ref_pose,
                     'ref_linear_velocity': ref_linear_velocity, 
                     'ref_orientation': ref_orientation,
                     'ref_angular_velocity': ref_angular_velocity,
-                    'ref_foot_FL': reference_foot_FL,
-                    'ref_foot_FR': reference_foot_FR,
-                    'ref_foot_RL': reference_foot_RL,
-                    'ref_foot_RR': reference_foot_RR}
+                    'ref_foot_FL': reference_foot_FL.reshape((1,3)),
+                    'ref_foot_FR': reference_foot_FR.reshape((1,3)),
+                    'ref_foot_RL': reference_foot_RL.reshape((1,3)),
+                    'ref_foot_RR': reference_foot_RR.reshape((1,3))}
 
 
 
@@ -254,9 +254,7 @@ stc = SwingTrajectoryController(step_height=step_height, swing_period=swing_peri
                                 generator = swing_generator)
 
 
-
 # Swing controller variables
-swing_time = [0, 0, 0, 0]
 lift_off_positions = [np.zeros((3, 1)) for _ in range(4)]
 
 position_foot_FL = d.geom_xpos[FL_id]
@@ -273,12 +271,15 @@ lift_off_positions[3] = copy.deepcopy(position_foot_RR)
 
 # MCTS module
 mcts = None
-mcts_swing_period = [1, 1, 1, 1]
-if config['use_mcts']:
-    mcts = mcts_module.MCTS(config['tree_dt'],
-                            config['tree_horizon'],
-                            config['tree_simulations'],
-                            config['num_legs'], 
+swing_time = [0, 0, 0, 0]
+stance_time = [1, 1, 1, 1]
+swing_phase = [0, 0, 0, 0]
+swing_period = [0, 0, 0, 0]
+if config.mcts_params['use_mcts']:
+    mcts = mcts_module.MCTS(config.mcts_params['tree_dt'],
+                            config.mcts_params['tree_horizon'],
+                            config.mcts_params['tree_simulations'],
+                            config.mcts_params['num_legs'], 
                             False, False, False)
 
 # Online computation of the inertia parameter
@@ -344,6 +345,7 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         if mcts:
             mcts.set_current_state(state_current, reference_state, current_contact, swing_time, stance_time)
             contact_sequence = mcts.run(100, [])
+            print("MCTS contact sequence: \n", contact_sequence)
         else:
             if(gait == "full_stance"):
                 contact_sequence = np.ones((4, horizon)) 
@@ -367,11 +369,7 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         hip_pos = np.array((d.body(FL_hip_id).xpos,
                             d.body(FR_hip_id).xpos,
                             d.body(RL_hip_id).xpos,
-                            d.body(RR_hip_id).xpos))
-        hip_pos = hip_pos.reshape((4, 3))
-
-
-        
+                            d.body(RR_hip_id).xpos)).reshape((4, 3))
 
         reference_foot_FL, \
         reference_foot_FR, \
@@ -384,25 +382,17 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         reference_state["ref_foot_RL"] = reference_foot_RL.reshape((1,3))
         reference_state["ref_foot_RR"] = reference_foot_RR.reshape((1,3))
         
-        # and rotate the reference velocity in the world frame
+        # Rotate the reference velocity in the world frame
         h_R_w = np.array([np.cos(rpy_angles[2]), np.sin(rpy_angles[2]), 0,
                           -np.sin(rpy_angles[2]), np.cos(rpy_angles[2]), 0,
-                          0, 0, 1])
-        h_R_w = h_R_w.reshape((3,3))
-        reference_state["ref_linear_velocity"] = h_R_w.T@ref_linear_velocity.reshape((3,1)).flatten()
+                          0, 0, 1]).reshape((3,3))
+        reference_state["ref_linear_velocity"] = h_R_w.T @ ref_linear_velocity.reshape((3,1)).flatten()
         
         if(use_print_debug): 
             print("reference_state: ")
             pprint.pprint(reference_state)
         # -------------------------------------------------------------------------------------------------
         
-        if(config.mpc_params['type'] == 'sampling'):
-            if(config.mpc_params['shift_solution']):
-                index_shift += 0.05
-                best_control_parameters = controller.shift_solution(best_control_parameters, index_shift)
-
-            
-
         # Solve OCP ---------------------------------------------------------------------------------------
         if(i % round(1/(mpc_frequency*simulation_dt)) == 0): 
             
@@ -431,9 +421,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                 status = controller.acados_ocp_solver.solve()
                 print("preparation phase time: ", controller.acados_ocp_solver.get_stats('time_tot'))
             
-            
-            
-            
             if(use_print_debug):
                 mean_tracking[0] = mean_tracking[0] + np.abs(state_current["position"][2] - reference_state["ref_position"][2])
                 mean_tracking[1] = mean_tracking[1] + np.abs(state_current["linear_velocity"][0] - reference_state["ref_linear_velocity"][0])
@@ -449,37 +436,30 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                 print("mean_cost: ", mean_optimizer_cost/(mean_num_sample))
                 mean_num_sample = mean_num_sample + 1
 
-
-
             # Put the GRFs to zero if the foot is not in contact
-            nmpc_GRFs[0:3] = nmpc_GRFs[0:3]*current_contact[0]
-            nmpc_GRFs[3:6] = nmpc_GRFs[3:6]*current_contact[1]
-            nmpc_GRFs[6:9] = nmpc_GRFs[6:9]*current_contact[2]
-            nmpc_GRFs[9:12] = nmpc_GRFs[9:12]*current_contact[3]
+            nmpc_GRFs[0:3] = nmpc_GRFs[0:3] * current_contact[0]
+            nmpc_GRFs[3:6] = nmpc_GRFs[3:6] * current_contact[1]
+            nmpc_GRFs[6:9] = nmpc_GRFs[6:9] * current_contact[2]
+            nmpc_GRFs[9:12] = nmpc_GRFs[9:12] * current_contact[3]
 
-            
             # Compute wrench. This goes to the estimator!
             wrench_linear = nmpc_GRFs[0:3] + \
                             nmpc_GRFs[3:6] + \
                             nmpc_GRFs[6:9] + \
                             nmpc_GRFs[9:12]
             
-            wrench_angular = cs.skew(state_current["foot_FL"] - state_current["position"])@nmpc_GRFs[0:3] + \
-                            cs.skew(state_current["foot_FR"] - state_current["position"])@nmpc_GRFs[3:6] + \
-                            cs.skew(state_current["foot_RL"] - state_current["position"])@nmpc_GRFs[6:9] + \
-                            cs.skew(state_current["foot_RR"] - state_current["position"])@nmpc_GRFs[9:12]
+            wrench_angular = cs.skew(state_current["foot_FL"] - state_current["position"]) @ nmpc_GRFs[0:3] + \
+                            cs.skew(state_current["foot_FR"] - state_current["position"]) @ nmpc_GRFs[3:6] + \
+                            cs.skew(state_current["foot_RL"] - state_current["position"]) @ nmpc_GRFs[6:9] + \
+                            cs.skew(state_current["foot_RR"] - state_current["position"]) @ nmpc_GRFs[9:12]
             wrench_angular = np.array(wrench_angular)
             
             nmpc_wrenches = np.concatenate((wrench_linear, wrench_angular.flatten()), axis=0)
         
-            
-
-
         if(use_print_debug): 
             print("nmpc_GRFs: \n", nmpc_GRFs)
             print("nmpc_footholds: \n", nmpc_footholds)
         # -------------------------------------------------------------------------------------------------
-
 
         # Compute Stance Torque --------------------------------------------------------------------------- 
         # Compute the jacobian of the contact points
@@ -532,9 +512,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         position_foot_RL_prev = copy.deepcopy(position_foot_RL)
         position_foot_RR_prev = copy.deepcopy(position_foot_RR)
 
-            
-
-
         # Compute the reference for the swing trajectory 
         if(use_print_debug): 
             print("swing_period: ", swing_period)
@@ -542,25 +519,58 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
 
         for leg in range(4):
             # Swing time reset
-            if(current_contact[leg] == 0):
-                if swing_time[leg] < swing_period:
-                    swing_time[leg] = swing_time[leg] + simulation_dt
+            if mcts:
+                if current_contact[leg] == 0:
+                    if previous_contact[leg] == 1 or previous_contact[leg] == 0 and swing_phase[leg] >= 1:
+                        swing_time[leg] = 0
+                        swing_phase[leg] = 0
+                        stance_time[leg] = 0
+                    else:
+                        swing_time[leg] += simulation_dt
+                        swing_phase[leg] = swing_time[leg] / swing_period[leg]
+                else:
+                    swing_time[leg] = 0
+                    swing_phase[leg] = 0
+                    stance_time[leg] += simulation_dt
             else:
-                swing_time[leg] = 0
-            
+                if current_contact[leg] == 0 and swing_time[leg] < swing_period:
+                    swing_time[leg] += simulation_dt
+                else:
+                    swing_time[leg] = 0
 
             # Set lif-offs
-            if previous_contact[leg] == 1 and current_contact[leg] == 0:
-                if(leg == 0):
-                    lift_off_positions[leg] = copy.deepcopy(position_foot_FL)
-                elif(leg == 1):
-                    lift_off_positions[leg] = copy.deepcopy(position_foot_FR)
-                elif(leg == 2):
-                    lift_off_positions[leg] = copy.deepcopy(position_foot_RL)
-                elif(leg == 3):
-                    lift_off_positions[leg] = copy.deepcopy(position_foot_RR)
+            if mcts:
+                if current_contact[leg] == 0:
+                    # Compute remaining swing period
+                    step = 0
+                    remaining_swing_time = 0
+                    while step < horizon and contact_sequence[leg][step] == 0:
+                        remaining_swing_time += mpc_dt
+                        step += 1
+                    
+                    if previous_contact[leg] == 1 or previous_contact[leg] == 0 and swing_phase[leg] >= 1:
+                        swing_period[leg] = remaining_swing_time
 
-        
+                        if(leg == 0):
+                            lift_off_positions[leg] = copy.deepcopy(position_foot_FL)
+                        elif(leg == 1):
+                            lift_off_positions[leg] = copy.deepcopy(position_foot_FR)
+                        elif(leg == 2):
+                            lift_off_positions[leg] = copy.deepcopy(position_foot_RL)
+                        elif(leg == 3):
+                            lift_off_positions[leg] = copy.deepcopy(position_foot_RR)
+                    else:
+                        swing_period[leg] = swing_time[leg] + remaining_swing_time
+            else:
+                if previous_contact[leg] == 1 and current_contact[leg] == 0:
+                    if(leg == 0):
+                        lift_off_positions[leg] = copy.deepcopy(position_foot_FL)
+                    elif(leg == 1):
+                        lift_off_positions[leg] = copy.deepcopy(position_foot_FR)
+                    elif(leg == 2):
+                        lift_off_positions[leg] = copy.deepcopy(position_foot_RL)
+                    elif(leg == 3):
+                        lift_off_positions[leg] = copy.deepcopy(position_foot_RR)
 
         # The swing controller is in the end-effector space. For its computation,
         # we save for simplicity joints position and velocities
@@ -587,8 +597,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         mass_matrix_FR = mass_matrix[9:12, 9:12]
         mass_matrix_RL = mass_matrix[12:15, 12:15]
         mass_matrix_RR = mass_matrix[15:18, 15:18]
-
-        
         
         # If the foot is not in stance, we can calculate the swing controller
         if (current_contact[0] == 0):
@@ -605,7 +613,8 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                                                position_foot_FL, 
                                                velocity_foot_FL,
                                                h_FL,
-                                               mass_matrix_FL)
+                                               mass_matrix_FL,
+                                               swing_period[0])
 
 
         if (current_contact[1] == 0):
@@ -622,7 +631,8 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                                                position_foot_FR,
                                                velocity_foot_FR,
                                                h_FR,
-                                               mass_matrix_FR)
+                                               mass_matrix_FR,
+                                               swing_period[1])
 
 
         if (current_contact[2] == 0):
@@ -639,7 +649,8 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                                                position_foot_RL,
                                                velocity_foot_RL,
                                                h_RL,
-                                               mass_matrix_RL)
+                                               mass_matrix_RL,
+                                               swing_period[2])
 
 
         if (current_contact[3] == 0):
@@ -656,8 +667,8 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                                                position_foot_RR,
                                                velocity_foot_RR,
                                                h_RR,
-                                               mass_matrix_RR)
-
+                                               mass_matrix_RR,
+                                               swing_period[3])
         # ---------------------------------------------------------------------------------------------------
 
 
@@ -677,9 +688,10 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
 
         # Plot
         if(use_visualization_debug and i % 100 == 0):
-            plot_swing_mujoco(mujoco, stc, swing_period, lift_off_positions, nmpc_footholds, 
-                              reference_foot_FL, reference_foot_FR,
-                              reference_foot_RL, reference_foot_RR, viewer)
+            for leg in range(4):
+                plot_swing_mujoco(mujoco, stc, swing_period[1], lift_off_positions, nmpc_footholds, 
+                                reference_foot_FL, reference_foot_FR,
+                                reference_foot_RL, reference_foot_RR, viewer)
             
 
 
