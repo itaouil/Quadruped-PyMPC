@@ -30,7 +30,7 @@ public:
      * @param par
      * @param useValueFunction
      */
-    MCTS(float dt, int horizon, int simulations, int legs, bool use_value_function, bool use_action_policy, bool only_imitation_learning);
+    MCTS(float dt, int horizon, int simulations, int legs, bool use_value_function, bool use_action_policy, bool only_imitation_learning, int batch_threads);
 
     /**
      * Start the MCTS cycle.
@@ -63,6 +63,14 @@ public:
     std::tuple<Eigen::Matrix3d, Eigen::Matrix3d,
             Eigen::VectorXd, Eigen::VectorXd,
             Eigen::Vector4d, float, std::vector<std::tuple < int, float, int, int, std::vector < float>>>> getMCTSData();
+
+    /**
+     * Compute and return the rollout costs.
+     *
+     * @param rollouts
+     * @return rollout costs
+     */
+    std::vector<float> solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts);
 
 private:
     // Whether to print debug info or not
@@ -187,14 +195,6 @@ private:
      * Create a new child node in the tree.
      */
     void addNode(const int parent_idx, const int contact);
-
-    /**
-     * Compute and return the rollout costs.
-     *
-     * @param rollouts
-     * @return rollout costs
-     */
-    std::vector<float> solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts);
 
     /**
      * Computes the average cost of the

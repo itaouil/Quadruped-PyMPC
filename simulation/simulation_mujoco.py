@@ -2,12 +2,6 @@
 
 # Authors: Giulio Turrisi -
 
-# import acados
-from joblib import Parallel, delayed
-
-from multiprocessing import Pool
-
-
 import mujoco.viewer
 import mujoco
 import matplotlib.pyplot as plt
@@ -484,8 +478,6 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
                 time_start = time.time()
 
                 start = time.time()
-
-                controller.compute_batch_control(state_current, reference_state, contact_sequence, inertia=inertia.flatten())
 
                 nmpc_GRFs, \
                 nmpc_footholds, \

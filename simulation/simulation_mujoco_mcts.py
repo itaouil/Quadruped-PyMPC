@@ -33,7 +33,7 @@ from foothold_reference_generator import FootholdReferenceGenerator
 from swing_trajectory_controller import SwingTrajectoryController
 from periodic_gait_generator import PeriodicGaitGenerator, Gait
 from srb_inertia_computation import SrbInertiaComputation
-from other import euler_from_quaternion, plot_swing_mujoco, plot_state_matplotlib
+from other import euler_from_quaternion, plot_swing_mujoco, plot_state_matplotlib, plot_swing_mujoco_leg
 
 # Parameters for both MPC and simulation
 import config 
@@ -689,9 +689,22 @@ with mujoco.viewer.launch_passive(m, d, show_left_ui=True, show_right_ui=True) a
         # Plot
         if(use_visualization_debug and i % 100 == 0):
             for leg in range(4):
-                plot_swing_mujoco(mujoco, stc, swing_period[1], lift_off_positions, nmpc_footholds, 
+                # plot_swing_mujoco(mujoco, stc, swing_period[1], lift_off_positions, nmpc_footholds, 
+                #                 reference_foot_FL, reference_foot_FR,
+                #                 reference_foot_RL, reference_foot_RR, viewer)
+                plot_swing_mujoco_leg(mujoco, stc, swing_period[0], lift_off_positions, nmpc_footholds, 
                                 reference_foot_FL, reference_foot_FR,
-                                reference_foot_RL, reference_foot_RR, viewer)
+                                reference_foot_RL, reference_foot_RR, viewer, 'FL')
+                plot_swing_mujoco_leg(mujoco, stc, swing_period[1], lift_off_positions, nmpc_footholds, 
+                                reference_foot_FL, reference_foot_FR,
+                                reference_foot_RL, reference_foot_RR, viewer, 'FR')
+                plot_swing_mujoco_leg(mujoco, stc, swing_period[2], lift_off_positions, nmpc_footholds, 
+                                reference_foot_FL, reference_foot_FR,
+                                reference_foot_RL, reference_foot_RR, viewer, 'RL')
+                plot_swing_mujoco_leg(mujoco, stc, swing_period[3], lift_off_positions, nmpc_footholds, 
+                                reference_foot_FL, reference_foot_FR,
+                                reference_foot_RL, reference_foot_RR, viewer, 'RR')
+
             
 
 

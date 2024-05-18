@@ -187,6 +187,71 @@ def plot_swing_mujoco(mujoco, stc, swing_period, lift_off_positions, nmpc_footho
 
     viewer.user_scn.ngeom = i
 
+def plot_swing_mujoco_leg(mujoco, stc, swing_period, lift_off_positions, nmpc_footholds, 
+                          reference_foot_FL, reference_foot_FR,
+                          reference_foot_RL, reference_foot_RR, viewer, leg=None):
+    
+    nmpc_foot_FL = nmpc_footholds[0]
+    nmpc_foot_FR = nmpc_footholds[1]
+    nmpc_foot_RL = nmpc_footholds[2]
+    nmpc_foot_RR = nmpc_footholds[3]
+
+    leg_indices = {
+        'FL': 0,
+        'FR': 1,
+        'RL': 2,
+        'RR': 3
+    }
+    
+    leg_colors = {
+        'FL': [1, 0, 0, 1],
+        'FR': [0, 1, 0, 1],
+        'RL': [0, 0, 1, 1],
+        'RR': [1, 1, 0, 1]
+    }
+
+    leg_names = ['FL', 'FR', 'RL', 'RR']
+
+    if leg:
+        legs_to_plot = [leg]
+    else:
+        legs_to_plot = leg_names
+    
+    viewer.user_scn.ngeom = 1
+    i = 0
+    j = 0
+    for foot_swing_time in np.arange(0.000001, swing_period, 0.002):
+        if j % 20 == 0:
+            for leg_name in legs_to_plot:
+                leg_index = leg_indices[leg_name]
+                desired_foot_swing, _, _ = stc.swing_generator.compute_trajectory_references(
+                    foot_swing_time, swing_period, lift_off_positions[leg_index], nmpc_footholds[leg_index])
+                mujoco.mjv_initGeom(
+                    viewer.user_scn.geoms[i],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.0025, 0, 0],
+                    pos=desired_foot_swing.reshape((3, 1)),
+                    mat=np.eye(3).flatten(),
+                    rgba=leg_colors[leg_name]
+                )
+                i += 1
+        j += 1
+
+    for leg_name in legs_to_plot:
+        leg_index = leg_indices[leg_name]
+        reference_foot = eval(f"reference_foot_{leg_name}")
+        mujoco.mjv_initGeom(
+            viewer.user_scn.geoms[i],
+            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+            size=[0.01, 0, 0],
+            pos=reference_foot.reshape((3, 1)),
+            mat=np.eye(3).flatten(),
+            rgba=leg_colors[leg_name]
+        )
+        i += 1
+
+    viewer.user_scn.ngeom = i
+
 
 
 def plot_state_matplotlib(queue, state_dict):

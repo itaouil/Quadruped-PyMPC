@@ -11,7 +11,7 @@
  * @param use_action_policy
  * @param only_imitation_learning
  */
-MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_function, bool use_action_policy, bool only_imitation_learning) :
+MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_function, bool use_action_policy, bool only_imitation_learning, int batch_threads) :
         m_legs(legs),
         m_tree_dt(dt),
         m_tree_horizon(horizon),
@@ -74,9 +74,9 @@ MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_func
             // Import the NMPC module and save the NMPC instance
             py::module nmpc_module = py::module::import("centroidal_nmpc_nominal");
             py::object nmpc_class = nmpc_module.attr("Acados_NMPC_Nominal");
-            m_nmpc_instance = nmpc_class();
+            m_nmpc_instance = nmpc_class(true, simulations, batch_threads);
 
-            m_python_initialized = true; // Mark as initialized
+            m_python_initialized = true;
         } catch (const py::error_already_set &e) {
             std::cerr << "Error initializing Python: " << e.what() << std::endl;
             throw;
@@ -363,19 +363,19 @@ int MCTS::treePolicy() {
             min_cost_idx = idx;
         }
 
-        std::cout << "Tree node: " << idx << std::endl;
-        std::cout << "Tree cost: " << tree_[idx].cost_ << std::endl;
-        std::cout << "Node contact: " << tree_[idx].contact_ << std::endl;
-        std::cout << "Node swing time: " << tree_[idx].swing_time_[0] << ", " 
-                                         << tree_[idx].swing_time_[1] << ", "
-                                         << tree_[idx].swing_time_[2] << ", "
-                                         << tree_[idx].swing_time_[3] << std::endl;
-        std::cout << "Node stance time: " << tree_[idx].stance_time_[0] << ", " 
-                                         << tree_[idx].stance_time_[1] << ", "
-                                         << tree_[idx].stance_time_[2] << ", "
-                                         << tree_[idx].stance_time_[3] << std::endl;
+        // std::cout << "Tree node: " << idx << std::endl;
+        // std::cout << "Tree cost: " << tree_[idx].cost_ << std::endl;
+        // std::cout << "Node contact: " << tree_[idx].contact_ << std::endl;
+        // std::cout << "Node swing time: " << tree_[idx].swing_time_[0] << ", " 
+        //                                  << tree_[idx].swing_time_[1] << ", "
+        //                                  << tree_[idx].swing_time_[2] << ", "
+        //                                  << tree_[idx].swing_time_[3] << std::endl;
+        // std::cout << "Node stance time: " << tree_[idx].stance_time_[0] << ", " 
+        //                                  << tree_[idx].stance_time_[1] << ", "
+        //                                  << tree_[idx].stance_time_[2] << ", "
+        //                                  << tree_[idx].stance_time_[3] << std::endl;
         
-        std::cout << "\n" << std::endl;
+        // std::cout << "\n" << std::endl;
 
         // for (int leg{0}; leg < m_legs; leg++) {
         //     if (tree_[tree_[idx].parent_].swing_time_[leg] == m_min_swing_time && tree_[tree_[idx].parent_].contact_ == 9 || tree_[tree_[idx].parent_].contact_ == 6) {
@@ -536,7 +536,7 @@ std::vector<float> MCTS::solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts)
  * @param node_idx
  */
 void MCTS::simulationPolicy(const int node_idx) {
-    if (m_only_imitation_learning || tree_.size() - node_idx == 1) {
+    if (m_only_imitation_learning || tree_.size() - node_idx == 1 || isLeafNode(node_idx)) {
         tree_[node_idx].n_visit_ += 1;
         tree_[node_idx].cost_ = tree_[tree_[node_idx].parent_].cost_ - 0.1;
         return;

@@ -24,7 +24,7 @@ import config
 
 # Class for the Acados NMPC, the model is in another file!
 class Acados_NMPC_Nominal:
-    def __init__(self):
+    def __init__(self, use_batch_solver, num_batch, num_threads_in_batch_solve):
 
         self.horizon = config.mpc_params['horizon']  # Define the number of discretization steps
         self.dt = config.mpc_params['dt']
@@ -67,11 +67,6 @@ class Acados_NMPC_Nominal:
             self.ocp, json_file="centroidal_nmpc" + ".json"
         )
 
-        # Batch solver
-        self.batch = 10
-        self.num_threads = 5
-        self.batch_solver = AcadosOcpBatchSolver(self.create_ocp_solver_description(acados_model), self.batch, verbose=True)
-
         # Initialize solver
         for stage in range(self.horizon + 1):
             self.acados_ocp_solver.set(stage, "x", np.zeros((self.states_dim,)))
@@ -83,13 +78,23 @@ class Acados_NMPC_Nominal:
             self.acados_ocp_solver.options_set('rti_phase', 1)
             status = self.acados_ocp_solver.solve()          
             
+        # Batch solver
+        if use_batch_solver:
+            self.batch = num_batch
+            batch_ocp = self.create_ocp_solver_description(acados_model, num_threads_in_batch_solve)
+            self.batch_solver = AcadosOcpBatchSolver(batch_ocp, self.batch, verbose=False)
 
-        
-
+            # Initialize solvers
+            for stage in range(self.horizon + 1):
+                for n in range(self.batch):
+                    self.batch_solver.ocp_solvers[n].set(stage, "x", np.zeros((self.states_dim,)))
+            for stage in range(self.horizon):
+                for n in range(self.batch):
+                    self.batch_solver.ocp_solvers[n].set(stage, "u", np.zeros((self.inputs_dim,)))
 
 
     # Set cost, constraints and options 
-    def create_ocp_solver_description(self, acados_model) -> AcadosOcp:
+    def create_ocp_solver_description(self, acados_model, num_threads_in_batch_solve=1) -> AcadosOcp:
         # Create ocp object to formulate the OCP
         ocp = AcadosOcp()
         ocp.model = acados_model
@@ -263,8 +268,7 @@ class Acados_NMPC_Nominal:
         #ocp.solver_options.regularize_method = "PROJECT_REDUC_HESS"
         #ocp.solver_options.nlp_solver_ext_qp_res = 1
         ocp.solver_options.levenberg_marquardt = 1e-3
-        ocp.solver_options.num_threads_in_batch_solve = 10
-        ocp.solver_options.print_level = 0 
+        ocp.solver_options.num_threads_in_batch_solve = num_threads_in_batch_solve
 
         # Set prediction horizon
         ocp.solver_options.tf = self.T_horizon
@@ -1890,6 +1894,6 @@ class Acados_NMPC_Nominal:
 
             # print(f"Cost for OCP batch {n}: {self.batch_solver.ocp_solvers[n].get_cost()}")
         
-        print(costs)
+        # print(costs)
 
         return costs
