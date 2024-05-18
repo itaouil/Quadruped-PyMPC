@@ -33,7 +33,7 @@ reference =  {'ref_position': np.array([0.  , 0.  , 0.35]),
               'ref_foot_RR': np.array([[-0.259, -0.149,  0.   ]])}
 
 # Create the MCTS module
-batch_threads = 10
+batch_threads = 5
 obj = mcts_module.MCTS(dt, horizon, simulations, legs, False, False, False, batch_threads)
 
 # Set the state for the MCTS object

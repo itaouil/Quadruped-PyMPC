@@ -568,6 +568,9 @@ void MCTS::simulationPolicy(const int node_idx) {
         // Cost that penalizes too many legs in swing
         float l_contact_cost{0};
 
+        // if using RTI, i can linearize once for all...
+        // m_nmpc_instance.attr("ocp_batch_preparation_phase");
+        
         // Perform simulations to obtain expected average cost for the node
         for (int th{0}; th < m_simulations; th++) {
             int contact{tree_[idx_sim].contact_};

@@ -24,7 +24,7 @@ import config
 
 # Class for the Acados NMPC, the model is in another file!
 class Acados_NMPC_Nominal:
-    def __init__(self, use_batch_solver, num_batch, num_threads_in_batch_solve):
+    def __init__(self, use_batch_solver = False, num_batch = 10, num_threads_in_batch_solve = 10):
 
         self.horizon = config.mpc_params['horizon']  # Define the number of discretization steps
         self.dt = config.mpc_params['dt']
@@ -61,22 +61,24 @@ class Acados_NMPC_Nominal:
         self.states_dim = acados_model.x.size()[0]
         self.inputs_dim = acados_model.u.size()[0]
 
-        # Create the acados ocp solver
-        self.ocp = self.create_ocp_solver_description(acados_model)
-        self.acados_ocp_solver = AcadosOcpSolver(
-            self.ocp, json_file="centroidal_nmpc" + ".json"
-        )
+        if not use_batch_solver:
+            # Create the acados ocp solver
+            self.ocp = self.create_ocp_solver_description(acados_model)
+            self.acados_ocp_solver = AcadosOcpSolver(
+                self.ocp, json_file="centroidal_nmpc" + ".json"
+            )
 
-        # Initialize solver
-        for stage in range(self.horizon + 1):
-            self.acados_ocp_solver.set(stage, "x", np.zeros((self.states_dim,)))
-        for stage in range(self.horizon):
-            self.acados_ocp_solver.set(stage, "u", np.zeros((self.inputs_dim,)))
+            # Initialize solver
+            for stage in range(self.horizon + 1):
+                self.acados_ocp_solver.set(stage, "x", np.zeros((self.states_dim,)))
+            for stage in range(self.horizon):
+                self.acados_ocp_solver.set(stage, "u", np.zeros((self.inputs_dim,)))
 
-        if(self.use_RTI):
-            # first preparation phase
-            self.acados_ocp_solver.options_set('rti_phase', 1)
-            status = self.acados_ocp_solver.solve()          
+            if(self.use_RTI):
+                # first preparation phase
+                self.acados_ocp_solver.options_set('rti_phase', 1)
+                status = self.acados_ocp_solver.solve()          
+          
             
         # Batch solver
         if use_batch_solver:
@@ -91,6 +93,10 @@ class Acados_NMPC_Nominal:
             for stage in range(self.horizon):
                 for n in range(self.batch):
                     self.batch_solver.ocp_solvers[n].set(stage, "u", np.zeros((self.inputs_dim,)))
+            
+            """if(self.use_RTI):
+                # first preparation phase
+                self.ocp_batch_preparation_phase()"""
 
 
     # Set cost, constraints and options 
@@ -1633,12 +1639,20 @@ class Acados_NMPC_Nominal:
         # Return the optimal GRF, the optimal foothold, the next state and the status of the optimization
         return optimal_GRF, optimal_foothold, optimal_next_state, status
 
-    # Main loop for computing the control
+
+
+
+    # Main loop for computing batched control
     def ocp_batch_solver(self, state, reference, contact_sequence, constraint = None, external_wrenches = np.zeros((6,)), 
                          inertia = config.inertia.reshape((9,)), mass = config.mass):
         start = time.time()
 
         costs = []
+
+        stance_proximity_FL = np.zeros((self.horizon, ))
+        stance_proximity_FR = np.zeros((self.horizon, ))
+        stance_proximity_RL = np.zeros((self.horizon, ))
+        stance_proximity_RR = np.zeros((self.horizon, ))
 
         for n in range(self.batch):
             # Take the array of the contact sequence and split it in 4 arrays, 
@@ -1713,7 +1727,7 @@ class Acados_NMPC_Nominal:
                     self.batch_solver.ocp_solvers[n].set(j, "yref", yref_tot)
                 else:
                     self.batch_solver.ocp_solvers[n].set(j, "yref", yref)
-                
+                    
                 
 
             
@@ -1732,7 +1746,6 @@ class Acados_NMPC_Nominal:
 
             
             
-
             # Fill stance param, friction and stance proximity 
             # (stance proximity will disable foothold optimization near a stance!!)
             mu = config.mpc_params['mu']
@@ -1741,7 +1754,7 @@ class Acados_NMPC_Nominal:
             # Stance Proximity ugly routine. Basically we disable foothold optimization
             # in the proximity of a stance phase (the real foot cannot travel too fast in
             # a small time!!)
-            stance_proximity_FL = np.zeros((self.horizon, ))
+            """stance_proximity_FL = np.zeros((self.horizon, ))
             stance_proximity_FR = np.zeros((self.horizon, ))
             stance_proximity_RL = np.zeros((self.horizon, ))
             stance_proximity_RR = np.zeros((self.horizon, ))
@@ -1777,7 +1790,7 @@ class Acados_NMPC_Nominal:
                             stance_proximity_RR[j] = 1*0
                     if(j+2) < self.horizon:
                         if(RR_contact_sequence[j+1] == 0 and RR_contact_sequence[j+2] == 1):
-                            stance_proximity_RR[j] = 1*0
+                            stance_proximity_RR[j] = 1*0"""
 
 
 
@@ -1809,6 +1822,8 @@ class Acados_NMPC_Nominal:
                                 inertia[6], inertia[7], inertia[8], mass])
                 self.batch_solver.ocp_solvers[n].set(j, "p", copy.deepcopy(param))
 
+            
+            
             # Set initial state constraint. We teleported the robot foothold
             # to the previous optimal foothold. This is done to avoid the optimization
             # of a foothold that is not considered at all at touchdown! In any case,
@@ -1826,7 +1841,7 @@ class Acados_NMPC_Nominal:
                 state["foot_RR"] = reference["ref_foot_RR"][0]
 
 
-            if(self.use_integrators):
+            """if(self.use_integrators):
                 # Compute error for integral action
                 alpha_integrator = config.mpc_params["alpha_integrator"]
                 self.integral_errors[0] += (state["position"][2] - reference["ref_position"][2])*alpha_integrator
@@ -1851,7 +1866,7 @@ class Acados_NMPC_Nominal:
                 self.integral_errors[4] = np.where(np.abs(self.integral_errors[4]) > cap_integrator_roll, cap_integrator_roll*np.sign(self.integral_errors[4]), self.integral_errors[4])
                 self.integral_errors[5] = np.where(np.abs(self.integral_errors[5]) > cap_integrator_pitch, cap_integrator_pitch*np.sign(self.integral_errors[5]), self.integral_errors[5])
 
-                print("self.integral_errors: ", self.integral_errors)
+                print("self.integral_errors: ", self.integral_errors)"""
 
             # Set initial state constraint acados, converting first the dictionary to np array
             state_acados = np.concatenate((state["position"], state["linear_velocity"],
@@ -1869,10 +1884,9 @@ class Acados_NMPC_Nominal:
 
 
             # Set stage constraint
-            h_R_w = np.array([np.cos(yaw), np.sin(yaw),
-                            -np.sin(yaw), np.cos(yaw)])
             if(self.use_foothold_constraints or self.use_stability_constraints):
-
+                h_R_w = np.array([np.cos(yaw), np.sin(yaw),
+                                -np.sin(yaw), np.cos(yaw)])
                 stance_proximity = np.vstack((stance_proximity_FL, stance_proximity_FR,
                                                 stance_proximity_RL, stance_proximity_RR))
                 self.set_stage_constraint(constraint, state, reference, contact_sequence, h_R_w, stance_proximity)
@@ -1883,10 +1897,16 @@ class Acados_NMPC_Nominal:
                 # feedback phase
                 self.batch_solver.ocp_solvers[n].options_set('rti_phase', 2)    
 
+
+        # Solve the batched ocp
         t0 = time.time()
         self.batch_solver.solve()
         t_elapsed = (time.time() - t0)
         t_elapsed2 = (time.time() - start)
+
+        #print("time_python: ", t_elapsed2)
+        #print("time_solver: ", t_elapsed)
+        
 
         for n in range(self.batch):
             costs.append(self.batch_solver.ocp_solvers[n].get_cost())
@@ -1897,3 +1917,11 @@ class Acados_NMPC_Nominal:
         # print(costs)
 
         return costs
+
+
+    def ocp_batch_preparation_phase(self,):
+        for n in range(self.batch):
+            # preparation phase
+            self.batch_solver.ocp_solvers[n].options_set('rti_phase', 1)
+        
+        self.batch_solver.solve()
