@@ -43,10 +43,15 @@ stance_time = np.zeros(legs) + 0.5
 obj.set_current_state(state, reference, contact, swing_time, stance_time)
 
 # Call batch ocp solve by passing random rollouts
-start = time.time()
+times = []
 rollouts = [np.ones((4,16)) for x in range(simulations)]
-obj.solve_batch_ocp(rollouts)
-print(f"Solving {simulations} OCPs took: ", time.time() - start)
+for _ in range(100):
+    start = time.time()
+    obj.solve_batch_ocp(rollouts)
+    times.append(time.time() - start)
+
+times_np = np.array(times)
+print(f"Solving {simulations} OCPs 100 times took on average: ", np.mean(times_np))
 
 # # Run MCTS routine
 # max_iter = 100
