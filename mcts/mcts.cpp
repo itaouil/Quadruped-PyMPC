@@ -62,9 +62,6 @@ MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_func
     //     }
     // }
 
-    // Start the pythong interpreter
-    py::gil_scoped_acquire acquire;
-
     if (!m_python_initialized) {
         try {
             // Add the directory containing required files
@@ -74,7 +71,7 @@ MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_func
             // Import the NMPC module and save the NMPC instance
             py::module nmpc_module = py::module::import("centroidal_nmpc_nominal");
             py::object nmpc_class = nmpc_module.attr("Acados_NMPC_Nominal");
-            m_nmpc_instance = nmpc_class(true, simulations, batch_threads);
+            m_nmpc_instance = nmpc_class(simulations);
 
             m_python_initialized = true;
         } catch (const py::error_already_set &e) {
@@ -92,8 +89,6 @@ MCTS::MCTS(float dt, int horizon, int simulations, int legs, bool use_value_func
  * @return the MCTS contact sequence to be fed to the MPC
  */
 Eigen::MatrixXi MCTS::run(const int max_iter, const std::vector<int>& fixed_contacts) {    
-    py::gil_scoped_acquire acquire;
-
     // Clear previous search
     tree_.clear();
 
@@ -229,8 +224,6 @@ void MCTS::setCurrentState(const py::dict state,
                            const Eigen::VectorXi &contact, 
                            const Eigen::VectorXf &swing_time, 
                            const Eigen::VectorXf &stance_time) {
-    py::gil_scoped_acquire acquire;
-
     current_state_.swing_time_ = swing_time;
     current_state_.stance_time_ = stance_time;
     current_state_.contact_ = binary2Decimal(contact);
@@ -505,6 +498,10 @@ int MCTS::constraintViolation(const int &contact, const float &swing_time, const
         return 3;
 }
 
+void MCTS::callSetOCPs(const int n, const Eigen::MatrixXi &rollout) {
+    m_nmpc_instance.attr("set_ocps")(n, m_state, m_reference, rollout);
+}
+
 /**
  * Solve OCPs in batch for the computed rollouts using ACADOS (python binding).
  *
@@ -513,18 +510,14 @@ int MCTS::constraintViolation(const int &contact, const float &swing_time, const
 std::vector<float> MCTS::solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts) {
     try {
         auto start = std::chrono::steady_clock::now();
-        // Compute costs for the rollouts
-        py::object result = m_nmpc_instance.attr("ocp_batch_solver")(m_state, m_reference, rollouts);
-        std::vector<float> ocp_costs = result.cast<std::vector<float>>();
+
+        m_nmpc_instance.attr("set_ocps")(m_state, m_reference, rollouts);
+
         auto end = std::chrono::steady_clock::now();
-        std::cout << "Time taken by solveOCPs call: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms" << std::endl;
+        std::cout << "Time taken by set_ocps call: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << " ms" << std::endl;
 
-        // // Print the ocp costs obtained matrix
-        // for (const auto& cost : ocp_costs) {
-        //     std::cout << "The cost is: " << cost << std::endl;
-        // }
-
-        return ocp_costs;
+        std::vector<float> costs;
+        return costs;
     } catch (const py::error_already_set &e) {
         std::cerr << "Error: " << e.what() << std::endl;
     }

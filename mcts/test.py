@@ -33,7 +33,7 @@ reference =  {'ref_position': np.array([0.  , 0.  , 0.35]),
               'ref_foot_RR': np.array([[-0.259, -0.149,  0.   ]])}
 
 # Create the MCTS module
-batch_threads = 5
+batch_threads = 1
 obj = mcts_module.MCTS(dt, horizon, simulations, legs, False, False, False, batch_threads)
 
 # Set the state for the MCTS object
@@ -42,22 +42,22 @@ swing_time = np.zeros(legs)
 stance_time = np.zeros(legs) + 0.5
 obj.set_current_state(state, reference, contact, swing_time, stance_time)
 
-# Call batch ocp solve by passing random rollouts
-times = []
-rollouts = [np.ones((4,16)) for x in range(simulations)]
-for _ in range(100):
-    start = time.time()
-    obj.solve_batch_ocp(rollouts)
-    times.append(time.time() - start)
+# # Call batch ocp solve by passing random rollouts
+# times = []
+# rollouts = [np.ones((4,16)) for x in range(simulations)]
+# for _ in range(1):
+#     start = time.time()
+#     obj.solve_batch_ocp(rollouts)
+#     times.append(time.time() - start)
 
-times_np = np.array(times)
-print(f"Solving {simulations} OCPs 100 times took on average: ", np.mean(times_np))
+# times_np = np.array(times)
+# print(f"Solving {simulations} OCPs 100 times took on average: ", np.mean(times_np))
 
-# # Run MCTS routine
-# max_iter = 100
-# fixed_contacts = []
-# start = time.time()
-# obj.run(max_iter, fixed_contacts)
-# print("MCTS runtime: ", time.time() - start)
+# Run MCTS routine
+max_iter = 100
+fixed_contacts = []
+start = time.time()
+obj.run(max_iter, fixed_contacts)
+print("MCTS runtime: ", time.time() - start)
 
 # print("MPC contact sequence:\n", contact_sequence)

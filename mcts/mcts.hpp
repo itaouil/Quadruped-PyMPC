@@ -15,6 +15,9 @@
 // #include <torch/script.h>
 #include "structs/node.hpp"
 #include "structs/state.hpp"
+#include <thread>
+#include <omp.h>
+
 
 namespace py = pybind11;
 
@@ -72,6 +75,9 @@ public:
      */
     std::vector<float> solveOCPs(const std::vector<Eigen::MatrixXi> &rollouts);
 
+
+    void callSetOCPs(const int n, const Eigen::MatrixXi &rollout);
+
 private:
     // Whether to print debug info or not
     bool m_debug{false};
@@ -99,8 +105,9 @@ private:
     // Python embedded variables
     py::dict m_state;
     py::dict m_reference;
-    py::object m_nmpc_instance;
     bool m_python_initialized{false};
+    // std::vector<py::object> m_nmpc_instances;
+    py::object m_nmpc_instance;
 
     // Contact constant
     float m_rc{2};

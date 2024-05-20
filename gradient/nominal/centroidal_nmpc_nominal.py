@@ -2,29 +2,25 @@
 
 # Authors: Giulio Turrisi - 
 
-from acados_template import AcadosOcp, AcadosOcpSolver, AcadosOcpBatchSolver
-from centroidal_model_nominal import Centroidal_Model_Nominal
+import os 
+import sys
+import copy
+import time
+import config 
 import numpy as np
 import scipy.linalg
 import casadi as cs
-import copy
+from multiprocessing.pool import ThreadPool as Pool
+from acados_template import AcadosOcp, AcadosOcpBatchSolver
+from centroidal_model_nominal import Centroidal_Model_Nominal
 
-import time
-
-import os 
 dir_path = os.path.dirname(os.path.realpath(__file__))
-
-import sys
 sys.path.append(dir_path)
 sys.path.append(dir_path + '/../../')
 
 
-import config 
-
-
-# Class for the Acados NMPC, the model is in another file!
 class Acados_NMPC_Nominal:
-    def __init__(self, use_batch_solver = False, num_batch = 10, num_threads_in_batch_solve = 10):
+    def __init__(self, simulations):
 
         self.horizon = config.mpc_params['horizon']  # Define the number of discretization steps
         self.dt = config.mpc_params['dt']
@@ -34,26 +30,21 @@ class Acados_NMPC_Nominal:
         self.use_warm_start = config.mpc_params['use_warm_start']
         self.use_foothold_constraints = config.mpc_params['use_foothold_constraints']
 
+        self.use_DDP = config.mpc_params['use_DDP']
 
         self.use_static_stability = config.mpc_params['use_static_stability']
         self.use_zmp_stability = config.mpc_params['use_zmp_stability']
         self.use_stability_constraints = self.use_static_stability or self.use_zmp_stability
-
-        self.use_DDP = config.mpc_params['use_DDP']
-
         
         self.previous_status = -1
         self.previous_contact_sequence = np.zeros((4, self.horizon))
         self.optimal_next_state = np.zeros((24,))
         self.previous_optimal_GRF = np.zeros((12,))
 
-
         self.integral_errors = np.zeros((6,))
-
 
         # For centering the variable around 0, 0, 0 (World frame)
         self.initial_base_position = np.array([0, 0, 0])
-
         
         # Create the class of the centroidal model and instantiate the acados model
         self.centroidal_model = Centroidal_Model_Nominal()
@@ -61,42 +52,22 @@ class Acados_NMPC_Nominal:
         self.states_dim = acados_model.x.size()[0]
         self.inputs_dim = acados_model.u.size()[0]
 
-        if not use_batch_solver:
-            # Create the acados ocp solver
-            self.ocp = self.create_ocp_solver_description(acados_model)
-            self.acados_ocp_solver = AcadosOcpSolver(
-                self.ocp, json_file="centroidal_nmpc" + ".json"
-            )
+        # Create the acados ocp solvers
+        self.simulations = simulations
+        self.ocp = self.create_ocp_solver_description(acados_model)
+        self.solvers = AcadosOcpBatchSolver(self.ocp, simulations, verbose=False)
 
+        for n in range(simulations):
             # Initialize solver
             for stage in range(self.horizon + 1):
-                self.acados_ocp_solver.set(stage, "x", np.zeros((self.states_dim,)))
+                self.solvers.ocp_solvers[n].set(stage, "x", np.zeros((self.states_dim,)))
             for stage in range(self.horizon):
-                self.acados_ocp_solver.set(stage, "u", np.zeros((self.inputs_dim,)))
+                self.solvers.ocp_solvers[n].set(stage, "u", np.zeros((self.inputs_dim,)))
 
             if(self.use_RTI):
                 # first preparation phase
-                self.acados_ocp_solver.options_set('rti_phase', 1)
-                status = self.acados_ocp_solver.solve()          
-          
-            
-        # Batch solver
-        if use_batch_solver:
-            self.batch = num_batch
-            batch_ocp = self.create_ocp_solver_description(acados_model, num_threads_in_batch_solve)
-            self.batch_solver = AcadosOcpBatchSolver(batch_ocp, self.batch, verbose=False)
-
-            # Initialize solvers
-            for stage in range(self.horizon + 1):
-                for n in range(self.batch):
-                    self.batch_solver.ocp_solvers[n].set(stage, "x", np.zeros((self.states_dim,)))
-            for stage in range(self.horizon):
-                for n in range(self.batch):
-                    self.batch_solver.ocp_solvers[n].set(stage, "u", np.zeros((self.inputs_dim,)))
-            
-            """if(self.use_RTI):
-                # first preparation phase
-                self.ocp_batch_preparation_phase()"""
+                self.solvers.ocp_solvers[n].options_set('rti_phase', 1)
+                status = self.solvers.ocp_solvers[n].solve()
 
 
     # Set cost, constraints and options 
@@ -1150,8 +1121,6 @@ class Acados_NMPC_Nominal:
 
     # Method to perform the centering of the states and the reference around (0, 0, 0)
     def perform_scaling(self, state, reference, constraint = None):
-
-
         self.initial_base_position = copy.deepcopy(state["position"])
         reference = copy.deepcopy(reference)
         state = copy.deepcopy(state)
@@ -1170,35 +1139,35 @@ class Acados_NMPC_Nominal:
         state["position"] = np.array([0, 0, 0])
 
         return state, reference, constraint
-
     
 
-    # Main loop for computing the control
-    def compute_control(self, state, reference, contact_sequence, constraint = None, external_wrenches = np.zeros((6,)), 
-                        inertia = config.inertia.reshape((9,)), mass = config.mass):
-        # Take the array of the contact sequence and split it in 4 arrays, 
-        # one for each leg
-        FL_contact_sequence = contact_sequence[0]
-        FR_contact_sequence = contact_sequence[1]
-        RL_contact_sequence = contact_sequence[2]
-        RR_contact_sequence = contact_sequence[3]
+    # Main loop for computing batched control
+    def set_ocp(self, n, state, reference, contact_sequence, constraint = None, external_wrenches = np.zeros((6,)), 
+                         inertia = config.inertia.reshape((9,)), mass = config.mass):
+        start = time.time()
 
-        FL_previous_contact_sequence = self.previous_contact_sequence[0]
-        FR_previous_contact_sequence = self.previous_contact_sequence[1]
-        RL_previous_contact_sequence = self.previous_contact_sequence[2]
-        RR_previous_contact_sequence = self.previous_contact_sequence[3]
+        stance_proximity_FL = np.zeros((self.horizon, ))
+        stance_proximity_FR = np.zeros((self.horizon, ))
+        stance_proximity_RL = np.zeros((self.horizon, ))
+        stance_proximity_RR = np.zeros((self.horizon, ))
 
-        
         # Perform the scaling of the states and the reference
         state, \
         reference, \
         constraint = self.perform_scaling(state, reference, constraint)
 
+        # Take the array of the contact sequence and split it in 4 arrays, 
+        # one for each leg
+        start = time.time()
+        FL_contact_sequence = contact_sequence[0]
+        FR_contact_sequence = contact_sequence[1]
+        RL_contact_sequence = contact_sequence[2]
+        RR_contact_sequence = contact_sequence[3]
 
         # Fill reference (self.states_dim+self.inputs_dim)
+        start = time.time()
         idx_ref_foot_to_assign = np.array([0, 0, 0, 0])
         for j in range(self.horizon):
-
             yref = np.zeros(shape=(self.states_dim + self.inputs_dim,))
             yref[0:3] = reference['ref_position']
             yref[3:6] = reference['ref_linear_velocity']
@@ -1208,7 +1177,6 @@ class Acados_NMPC_Nominal:
             yref[15:18] = reference['ref_foot_FR'][idx_ref_foot_to_assign[1]]
             yref[18:21] = reference['ref_foot_RL'][idx_ref_foot_to_assign[2]]
             yref[21:24] = reference['ref_foot_RR'][idx_ref_foot_to_assign[3]]
-
 
             # Update the idx_ref_foot_to_assign. Every time there is a change in the contact phase
             # between 1 and 0, it means that the leg go into swing and a new reference is needed!!!
@@ -1224,16 +1192,15 @@ class Acados_NMPC_Nominal:
                         idx_ref_foot_to_assign[2] += 1
                 if(RR_contact_sequence[j+1] == 0 and RR_contact_sequence[j] == 1):
                     if(reference['ref_foot_RR'].shape[0] > idx_ref_foot_to_assign[3]+1):
-                        idx_ref_foot_to_assign[3] += 1 
-
+                        idx_ref_foot_to_assign[3] += 1
 
             # Calculate the reference force z for the leg in stance
             # It's simply mass*acc/number_of_legs_in_stance!!
             # Force x and y are always 0
-            number_of_legs_in_stance = np.array([FL_contact_sequence[j], FR_contact_sequence[j], 
-                                                 RL_contact_sequence [j], RR_contact_sequence[j]]).sum()
-            reference_force_stance_legs = (mass * 9.81) / number_of_legs_in_stance
-            
+            reference_force_stance_legs = (mass * 9.81) / np.array([FL_contact_sequence[j],
+                                                                    FR_contact_sequence[j],
+                                                                    RL_contact_sequence[j],
+                                                                    RR_contact_sequence[j]]).sum()
             reference_force_fl_z = reference_force_stance_legs * FL_contact_sequence[j]
             reference_force_fr_z = reference_force_stance_legs * FR_contact_sequence[j]
             reference_force_rl_z = reference_force_stance_legs * RL_contact_sequence[j]
@@ -1243,7 +1210,6 @@ class Acados_NMPC_Nominal:
             yref[50] = reference_force_rl_z
             yref[53] = reference_force_rr_z
 
-            
             # Setting the reference to acados
             if(self.use_DDP):
                 if(j == 0):
@@ -1252,14 +1218,12 @@ class Acados_NMPC_Nominal:
                     num_l2_penalties = self.ocp.model.cost_y_expr.shape[0] - (self.states_dim + self.inputs_dim)
                 
                 yref_tot = np.concatenate((yref, np.zeros(num_l2_penalties,) ))
-                self.acados_ocp_solver.set(j, "yref", yref_tot)
+                self.solvers.ocp_solvers[n].set(j, "yref", yref_tot)
             else:
-                self.acados_ocp_solver.set(j, "yref", yref)
-            
-            
+                self.solvers.ocp_solvers[n].set(j, "yref", yref)
 
-        
         # Fill last step horizon reference (self.states_dim - no control action!!)
+        start = time.time()
         yref_N = np.zeros(shape=(self.states_dim ,))
         yref_N[0:3] = reference['ref_position']
         yref_N[3:6] = reference['ref_linear_velocity']
@@ -1269,67 +1233,22 @@ class Acados_NMPC_Nominal:
         yref_N[15:18] = reference['ref_foot_FR'][idx_ref_foot_to_assign[1]]
         yref_N[18:21] = reference['ref_foot_RL'][idx_ref_foot_to_assign[2]]
         yref_N[21:24] = reference['ref_foot_RR'][idx_ref_foot_to_assign[3]]
-        # Setting the reference to acados
-        self.acados_ocp_solver.set(self.horizon, "yref", yref_N)
 
-        
-        
+        # Setting the reference to acados
+        self.solvers.ocp_solvers[n].set(self.horizon, "yref", yref_N)
 
         # Fill stance param, friction and stance proximity 
         # (stance proximity will disable foothold optimization near a stance!!)
         mu = config.mpc_params['mu']
         yaw = state["orientation"][2]
         
-        # Stance Proximity ugly routine. Basically we disable foothold optimization
-        # in the proximity of a stance phase (the real foot cannot travel too fast in
-        # a small time!!)
-        stance_proximity_FL = np.zeros((self.horizon, ))
-        stance_proximity_FR = np.zeros((self.horizon, ))
-        stance_proximity_RL = np.zeros((self.horizon, ))
-        stance_proximity_RR = np.zeros((self.horizon, ))
-
-        for j in range(self.horizon):
-            if(FL_contact_sequence[j] == 0):
-                if(j+1) < self.horizon:
-                    if(FL_contact_sequence[j+1] == 1):
-                        stance_proximity_FL[j] = 1*0
-                if(j+2) < self.horizon:
-                    if(FL_contact_sequence[j+1] == 0 and FL_contact_sequence[j+2] == 1):
-                        stance_proximity_FL[j] = 1*0
-            
-            if(FR_contact_sequence[j] == 0):
-                if(j+1) < self.horizon:
-                    if(FR_contact_sequence[j+1] == 1):
-                        stance_proximity_FR[j] = 1*0
-                if(j+2) < self.horizon:
-                    if(FR_contact_sequence[j+1] == 0 and FR_contact_sequence[j+2] == 1):
-                        stance_proximity_FR[j] = 1*0
-            
-            if(RL_contact_sequence[j] == 0):
-                if(j+1) < self.horizon:
-                    if(RL_contact_sequence[j+1] == 1):
-                        stance_proximity_RL[j] = 1*0
-                if(j+2) < self.horizon:
-                    if(RL_contact_sequence[j+1] == 0 and RL_contact_sequence[j+2] == 1):
-                        stance_proximity_RL[j] = 1*0
-            
-            if(RR_contact_sequence[j] == 0):
-                if(j+1) < self.horizon:
-                    if(RR_contact_sequence[j+1] == 1):
-                        stance_proximity_RR[j] = 1*0
-                if(j+2) < self.horizon:
-                    if(RR_contact_sequence[j+1] == 0 and RR_contact_sequence[j+2] == 1):
-                        stance_proximity_RR[j] = 1*0
-
-
-
         # Set the parameters to  acados
         for j in range(self.horizon):
             # If we have estimated an external wrench, we can compensate it for all steps
             # or less (maybe the disturbance is not costant along the horizon!)
             if(config.mpc_params['external_wrenches_compensation'] and
-               config.mpc_params['external_wrenches_compensation_num_step'] and 
-               j < config.mpc_params['external_wrenches_compensation_num_step']):
+            config.mpc_params['external_wrenches_compensation_num_step'] and 
+            j < config.mpc_params['external_wrenches_compensation_num_step']):
                 external_wrenches_estimated_param = copy.deepcopy(external_wrenches)
                 external_wrenches_estimated_param = external_wrenches_estimated_param.reshape((6, ))
             else:
@@ -1337,24 +1256,20 @@ class Acados_NMPC_Nominal:
             
 
             param = np.array([FL_contact_sequence[j], FR_contact_sequence[j], 
-                            RL_contact_sequence[j], RR_contact_sequence[j], mu, 
-                            stance_proximity_FL[j],
-                            stance_proximity_FR[j], 
-                            stance_proximity_RL[j],
-                            stance_proximity_RR[j],
-                            state["position"][0], state["position"][1], 
-                            state["position"][2], state["orientation"][2],
-                            external_wrenches_estimated_param[0], external_wrenches_estimated_param[1],
-                            external_wrenches_estimated_param[2], external_wrenches_estimated_param[3],
-                            external_wrenches_estimated_param[4], external_wrenches_estimated_param[5],
-                            inertia[0], inertia[1], inertia[2], inertia[3], inertia[4], inertia[5],
-                            inertia[6], inertia[7], inertia[8], mass])
-            self.acados_ocp_solver.set(j, "p", copy.deepcopy(param))
-
+                                RL_contact_sequence[j], RR_contact_sequence[j], mu, 
+                                stance_proximity_FL[j],
+                                stance_proximity_FR[j], 
+                                stance_proximity_RL[j],
+                                stance_proximity_RR[j],
+                                state["position"][0], state["position"][1], 
+                                state["position"][2], state["orientation"][2],
+                                external_wrenches_estimated_param[0], external_wrenches_estimated_param[1],
+                                external_wrenches_estimated_param[2], external_wrenches_estimated_param[3],
+                                external_wrenches_estimated_param[4], external_wrenches_estimated_param[5],
+                                inertia[0], inertia[1], inertia[2], inertia[3], inertia[4], inertia[5],
+                                inertia[6], inertia[7], inertia[8], mass])
+            self.solvers.ocp_solvers[n].set(j, "p", param)
         
-
-
-
         # Set initial state constraint. We teleported the robot foothold
         # to the previous optimal foothold. This is done to avoid the optimization
         # of a foothold that is not considered at all at touchdown! In any case,
@@ -1371,553 +1286,49 @@ class Acados_NMPC_Nominal:
         if(RR_contact_sequence[0] == 0):
             state["foot_RR"] = reference["ref_foot_RR"][0]
 
-
-        if(self.use_integrators):
-            # Compute error for integral action
-            alpha_integrator = config.mpc_params["alpha_integrator"]
-            self.integral_errors[0] += (state["position"][2] - reference["ref_position"][2])*alpha_integrator
-            self.integral_errors[1] += (state["linear_velocity"][0] - reference["ref_linear_velocity"][0])*alpha_integrator
-            self.integral_errors[2] += (state["linear_velocity"][1] - reference["ref_linear_velocity"][1])*alpha_integrator
-            self.integral_errors[3] += (state["linear_velocity"][2] - reference["ref_linear_velocity"][2])*alpha_integrator
-            self.integral_errors[4] += (state["orientation"][0] - reference["ref_orientation"][0])*(alpha_integrator)
-            self.integral_errors[5] += (state["orientation"][1] - reference["ref_orientation"][1])*alpha_integrator
-            
-
-            cap_integrator_z = config.mpc_params["integrator_cap"][0]
-            cap_integrator_x_dot = config.mpc_params["integrator_cap"][1]
-            cap_integrator_y_dot = config.mpc_params["integrator_cap"][2]
-            cap_integrator_z_dot = config.mpc_params["integrator_cap"][3]
-            cap_integrator_roll = config.mpc_params["integrator_cap"][4]
-            cap_integrator_pitch = config.mpc_params["integrator_cap"][5]
-
-            self.integral_errors[0] = np.where(np.abs(self.integral_errors[0]) > cap_integrator_z, cap_integrator_z*np.sign(self.integral_errors[0]), self.integral_errors[0])
-            self.integral_errors[1] = np.where(np.abs(self.integral_errors[1]) > cap_integrator_x_dot, cap_integrator_x_dot*np.sign(self.integral_errors[1]), self.integral_errors[1])
-            self.integral_errors[2] = np.where(np.abs(self.integral_errors[2]) > cap_integrator_y_dot, cap_integrator_y_dot*np.sign(self.integral_errors[2]), self.integral_errors[2])
-            self.integral_errors[3] = np.where(np.abs(self.integral_errors[3]) > cap_integrator_z_dot, cap_integrator_z_dot*np.sign(self.integral_errors[3]), self.integral_errors[3])
-            self.integral_errors[4] = np.where(np.abs(self.integral_errors[4]) > cap_integrator_roll, cap_integrator_roll*np.sign(self.integral_errors[4]), self.integral_errors[4])
-            self.integral_errors[5] = np.where(np.abs(self.integral_errors[5]) > cap_integrator_pitch, cap_integrator_pitch*np.sign(self.integral_errors[5]), self.integral_errors[5])
-
-            print("self.integral_errors: ", self.integral_errors)
-
-
         # Set initial state constraint acados, converting first the dictionary to np array
         state_acados = np.concatenate((state["position"], state["linear_velocity"],
                                 state["orientation"], state["angular_velocity"],
                                 state["foot_FL"], state["foot_FR"],
                                 state["foot_RL"], state["foot_RR"],
                                 self.integral_errors)).reshape((self.states_dim, 1))
-        self.acados_ocp_solver.set(0, "lbx", state_acados)
-        self.acados_ocp_solver.set(0, "ubx", state_acados)
+        self.solvers.ocp_solvers[n].set(0, "lbx", state_acados)
+        self.solvers.ocp_solvers[n].set(0, "ubx", state_acados)
 
-
-        # Set Warm start in case...
         if(self.use_warm_start):
             self.set_warm_start(state_acados, reference, FL_contact_sequence, FR_contact_sequence, RL_contact_sequence, RR_contact_sequence)
 
-
-        # Set stage constraint
-        h_R_w = np.array([np.cos(yaw), np.sin(yaw),
-                        -np.sin(yaw), np.cos(yaw)])
         if(self.use_foothold_constraints or self.use_stability_constraints):
-
+            h_R_w = np.array([np.cos(yaw), np.sin(yaw),
+                            -np.sin(yaw), np.cos(yaw)])
             stance_proximity = np.vstack((stance_proximity_FL, stance_proximity_FR,
                                             stance_proximity_RL, stance_proximity_RR))
             self.set_stage_constraint(constraint, state, reference, contact_sequence, h_R_w, stance_proximity)
 
-        
-        # Solve ocp via RTI or normal ocp
         if self.use_RTI:
-            # feedback phase
-            self.acados_ocp_solver.options_set('rti_phase', 2)
-            status = self.acados_ocp_solver.solve()
-            print("feedback phase time: ", self.acados_ocp_solver.get_stats('time_tot'))
-
-        else:
-            status = self.acados_ocp_solver.solve()
-            print("ocp time: ", self.acados_ocp_solver.get_stats('time_tot'))
-
-
-        # Take the solution        
-        control = self.acados_ocp_solver.get(0, "u")
-        optimal_GRF = control[12:]
-        optimal_foothold = np.zeros((4, 3))
-        optimal_footholds_assigned = np.zeros((4, ), dtype='bool')
-
+            self.solvers.ocp_solvers[n].options_set('rti_phase', 2)
         
-
-        # We need to provide the next touchdown foothold position.
-        # We first take the foothold in stance now (they are not optimized!)
-        # and flag them as True (aka "assigned") 
-        if FL_contact_sequence[0] == 1:
-            optimal_foothold[0] = state["foot_FL"]
-            optimal_footholds_assigned[0] = True
-        if FR_contact_sequence[0] == 1:
-            optimal_foothold[1] = state["foot_FR"]
-            optimal_footholds_assigned[1] = True
-        if RL_contact_sequence[0] == 1:
-            optimal_foothold[2] = state["foot_RL"]
-            optimal_footholds_assigned[2] = True
-        if RR_contact_sequence[0] == 1:
-            optimal_foothold[3] = state["foot_RR"]
-            optimal_footholds_assigned[3] = True
+        print("Time taken to set OCP: ", time.time() - start)
 
 
+    def set_ocps(self, state, reference, contact_sequences):
+        # Prepare the arguments for each process
+        args_list = [(n, state, reference, contact_sequences[0]) for n in range(10)]
 
-        # Then we take the foothold at the next touchdown from the one 
-        # that are not flagged as True from before, and saturate them!!   
-        # P.S. The saturation is in the horizontal frame
-        h_R_w = h_R_w.reshape((2, 2))     
-        for j in range(1, self.horizon):
-            if(FL_contact_sequence[j] != FL_contact_sequence[j-1] and not optimal_footholds_assigned[0]):
-                optimal_foothold[0] = self.acados_ocp_solver.get(j, "x")[12:15]
-                optimal_footholds_assigned[0] = True
-                
-                if(constraint is None):
-                    first_up_constraint_FL = np.array([reference["ref_foot_FL"][0][0], reference["ref_foot_FL"][0][1], reference["ref_foot_FL"][0][2] + 0.002])
-                    first_low_constraint_FL = np.array([reference["ref_foot_FL"][0][0], reference["ref_foot_FL"][0][1], reference["ref_foot_FL"][0][2] - 0.002])
+        print(args_list)
 
-                    first_up_constraint_FL[0:2] = h_R_w@(first_up_constraint_FL[0:2] - state["position"][0:2]) + 0.15
-                    first_low_constraint_FL[0:2] = h_R_w@(first_low_constraint_FL[0:2] - state["position"][0:2]) - 0.15
-                else:
-                    first_up_constraint_FL = np.array([constraint[0][0], constraint[1][0], constraint[2][0] + 0.002])
-                    first_low_constraint_FL = np.array([constraint[9][0], constraint[10][0], constraint[11][0] - 0.002])
-
-                    first_up_constraint_FL[0:2] = h_R_w@(first_up_constraint_FL[0:2] - state["position"][0:2])
-                    first_low_constraint_FL[0:2] = h_R_w@(first_low_constraint_FL[0:2] - state["position"][0:2])
-
-                optimal_foothold[0][0:2] = h_R_w@(optimal_foothold[0][0:2] - state["position"][0:2])
-                optimal_foothold[0][0:2] = np.clip(optimal_foothold[0][0:2], first_low_constraint_FL[0:2], first_up_constraint_FL[0:2])
-                optimal_foothold[0][0:2] = h_R_w.T@optimal_foothold[0][0:2] + state["position"][0:2]
-
-                
-            if(FR_contact_sequence[j] != FR_contact_sequence[j-1] and not optimal_footholds_assigned[1]):
-                optimal_foothold[1] = self.acados_ocp_solver.get(j, "x")[15:18]
-                optimal_footholds_assigned[1] = True
-
-                if(constraint is None):
-                    first_up_constraint_FR = np.array([reference["ref_foot_FR"][0][0], reference["ref_foot_FR"][0][1], reference["ref_foot_FR"][0][2] + 0.002])
-                    first_low_constraint_FR = np.array([reference["ref_foot_FR"][0][0], reference["ref_foot_FR"][0][1], reference["ref_foot_FR"][0][2] - 0.002])
-
-                    first_up_constraint_FR[0:2] = h_R_w@(first_up_constraint_FR[0:2] - state["position"][0:2]) + 0.15
-                    first_low_constraint_FR[0:2] = h_R_w@(first_low_constraint_FR[0:2] - state["position"][0:2]) - 0.15
-                else:
-                    first_up_constraint_FR = np.array([constraint[0][1], constraint[1][1], constraint[2][1] + 0.002])
-                    first_low_constraint_FR = np.array([constraint[9][1], constraint[10][1], constraint[11][1] - 0.002])
-
-                    first_up_constraint_FR[0:2] = h_R_w@(first_up_constraint_FR[0:2] - state["position"][0:2])
-                    first_low_constraint_FR[0:2] = h_R_w@(first_low_constraint_FR[0:2] - state["position"][0:2])
-
-                optimal_foothold[1][0:2] = h_R_w@(optimal_foothold[1][0:2] - state["position"][0:2])
-                optimal_foothold[1][0:2] = np.clip(optimal_foothold[1][0:2], first_low_constraint_FR[0:2], first_up_constraint_FR[0:2])
-                optimal_foothold[1][0:2] = h_R_w.T@optimal_foothold[1][0:2] + state["position"][0:2]
-
-                
-            if(RL_contact_sequence[j] != RL_contact_sequence[j-1] and not optimal_footholds_assigned[2]):
-                optimal_foothold[2] = self.acados_ocp_solver.get(j, "x")[18:21]
-                optimal_footholds_assigned[2] = True
-
-                if(constraint is None):
-                    first_up_constraint_RL = np.array([reference["ref_foot_RL"][0][0], reference["ref_foot_RL"][0][1], reference["ref_foot_RL"][0][2] + 0.002])
-                    first_low_constraint_RL = np.array([reference["ref_foot_RL"][0][0], reference["ref_foot_RL"][0][1], reference["ref_foot_RL"][0][2] - 0.002])
-                
-                    first_up_constraint_RL[0:2] = h_R_w@(first_up_constraint_RL[0:2] - state["position"][0:2]) + 0.15
-                    first_low_constraint_RL[0:2] = h_R_w@(first_low_constraint_RL[0:2] - state["position"][0:2]) - 0.15                    
-                else:
-                    first_up_constraint_RL = np.array([constraint[0][2], constraint[1][2], constraint[2][2] + 0.002])
-                    first_low_constraint_RL = np.array([constraint[9][2], constraint[10][2], constraint[11][2] - 0.002])
-
-                    first_up_constraint_RL[0:2] = h_R_w@(first_up_constraint_RL[0:2] - state["position"][0:2])
-                    first_low_constraint_RL[0:2] = h_R_w@(first_low_constraint_RL[0:2] - state["position"][0:2])
-                
-                optimal_foothold[2][0:2] = h_R_w@(optimal_foothold[2][0:2] - state["position"][0:2])
-                optimal_foothold[2][0:2] = np.clip(optimal_foothold[2][0:2], first_low_constraint_RL[0:2], first_up_constraint_RL[0:2])
-                optimal_foothold[2][0:2] = h_R_w.T@optimal_foothold[2][0:2] + state["position"][0:2]
-                
-            if(RR_contact_sequence[j] != RR_contact_sequence[j-1] and not optimal_footholds_assigned[3]):
-                optimal_foothold[3] = self.acados_ocp_solver.get(j, "x")[21:24]
-                optimal_footholds_assigned[3] = True
-
-                if(constraint is None):
-                    first_up_constraint_RR = np.array([reference["ref_foot_RR"][0][0], reference["ref_foot_RR"][0][1], reference["ref_foot_RR"][0][2] + 0.002])
-                    first_low_constraint_RR = np.array([reference["ref_foot_RR"][0][0], reference["ref_foot_RR"][0][1], reference["ref_foot_RR"][0][2] - 0.002])
-                
-                    first_up_constraint_RR[0:2] = h_R_w@(first_up_constraint_RR[0:2] - state["position"][0:2]) + 0.15
-                    first_low_constraint_RR[0:2] = h_R_w@(first_low_constraint_RR[0:2] - state["position"][0:2]) - 0.15
-                else:
-                    first_up_constraint_RR = np.array([constraint[0][3], constraint[1][3], constraint[2][3] + 0.002])
-                    first_low_constraint_RR = np.array([constraint[9][3], constraint[10][3], constraint[11][3] - 0.002])
-
-                    first_up_constraint_RR[0:2] = h_R_w@(first_up_constraint_RR[0:2] - state["position"][0:2])
-                    first_low_constraint_RR[0:2] = h_R_w@(first_low_constraint_RR[0:2] - state["position"][0:2])
-
-                optimal_foothold[3][0:2] = h_R_w@(optimal_foothold[3][0:2] - state["position"][0:2])
-                optimal_foothold[3][0:2] = np.clip(optimal_foothold[3][0:2], first_low_constraint_RR[0:2], first_up_constraint_RR[0:2])
-                optimal_foothold[3][0:2] = h_R_w.T@optimal_foothold[3][0:2] + state["position"][0:2]
+        # Create a pool of processes
+        with Pool(processes=4) as pool:
+            pool.map(self.set_ocp, (0, state, reference, contact_sequences[0]))
 
 
-
-
-
-        # If in the prediction horizon, the foot is never in stance, we replicate the reference 
-        #to not confuse the swing controller
-        if(optimal_footholds_assigned[0] == False):
-            optimal_foothold[0] = reference["ref_foot_FL"][0]
-        if(optimal_footholds_assigned[1] == False):
-            optimal_foothold[1] = reference["ref_foot_FR"][0]
-        if(optimal_footholds_assigned[2] == False):
-            optimal_foothold[2] = reference["ref_foot_RL"][0]
-        if(optimal_footholds_assigned[3] == False):
-            optimal_foothold[3] = reference["ref_foot_RR"][0]
-                
-        
-
-
-        if(config.mpc_params['dt'] <= 0.02 or (config.mpc_params['use_nonuniform_discretization'] and config.mpc_params['dt_fine_grained'] <= 0.02)):
-            optimal_next_state_index = 2
-        else:
-            optimal_next_state_index = 1
-        
-        optimal_next_state = self.acados_ocp_solver.get(optimal_next_state_index, "x")[0:24]
-        self.optimal_next_state = optimal_next_state
-        # self.acados_ocp_solver.print_statistics()
-        
-
-        # Check if QPs converged, if not just use the reference footholds
-        # and a GRF over Z distribuited between the leg in stance
-        if(status == 1 or status == 4):
-            print("status", status)
-            if FL_contact_sequence[0] == 0:
-                optimal_foothold[0] = reference["ref_foot_FL"][0]
-            if FR_contact_sequence[0] == 0:
-                optimal_foothold[1] = reference["ref_foot_FR"][0]
-            if RL_contact_sequence[0] == 0:
-                optimal_foothold[2] = reference["ref_foot_RL"][0]
-            if RR_contact_sequence[0] == 0:
-                optimal_foothold[3] = reference["ref_foot_RR"][0]
-            
-            number_of_legs_in_stance = np.array([FL_contact_sequence[0], FR_contact_sequence[0], 
-                                                 RL_contact_sequence [0], RR_contact_sequence[0]]).sum()
-            reference_force_stance_legs = (mass * 9.81) / number_of_legs_in_stance
-            
-            reference_force_fl_z = reference_force_stance_legs * FL_contact_sequence[0]
-            reference_force_fr_z = reference_force_stance_legs * FR_contact_sequence[0]
-            reference_force_rl_z = reference_force_stance_legs * RL_contact_sequence[0]
-            reference_force_rr_z = reference_force_stance_legs * RR_contact_sequence[0]
-            optimal_GRF = np.zeros((12, ))
-            optimal_GRF[2] = reference_force_fl_z
-            optimal_GRF[5] = reference_force_fr_z
-            optimal_GRF[8] = reference_force_rl_z
-            optimal_GRF[11] = reference_force_rr_z
-
-
-
-            optimal_GRF = self.previous_optimal_GRF
-            self.acados_ocp_solver.reset()
-      
-
-
-
-
-        # Save the previous optimal GRF, the previous status and the previous contact sequence
-        self.previous_optimal_GRF = optimal_GRF
-        self.previous_status = status
-        self.previous_contact_sequence = contact_sequence
-
-
-        # Decenter the optimal foothold and the next state (they were centered around zero at the beginning)
-        optimal_foothold[0] = optimal_foothold[0] + self.initial_base_position
-        optimal_foothold[1] = optimal_foothold[1] + self.initial_base_position
-        optimal_foothold[2] = optimal_foothold[2] + self.initial_base_position
-        optimal_foothold[3] = optimal_foothold[3] + self.initial_base_position
-
-        optimal_next_state[0:3] = optimal_next_state[0:3] + self.initial_base_position
-        optimal_next_state[12:15] = optimal_foothold[0]
-        optimal_next_state[15:18] = optimal_foothold[1]
-        optimal_next_state[18:21] = optimal_foothold[2]
-        optimal_next_state[21:24] = optimal_foothold[3]
-
-        # Return the optimal GRF, the optimal foothold, the next state and the status of the optimization
-        return optimal_GRF, optimal_foothold, optimal_next_state, status
-
-
-
-
-    # Main loop for computing batched control
-    def ocp_batch_solver(self, state, reference, contact_sequence, constraint = None, external_wrenches = np.zeros((6,)), 
-                         inertia = config.inertia.reshape((9,)), mass = config.mass):
+    def solve_batch_ocps(self):
         start = time.time()
+        self.solvers.solve()
+        print("To solve the ocps it takes: ", time.time() - start)
 
-        costs = []
-
-        stance_proximity_FL = np.zeros((self.horizon, ))
-        stance_proximity_FR = np.zeros((self.horizon, ))
-        stance_proximity_RL = np.zeros((self.horizon, ))
-        stance_proximity_RR = np.zeros((self.horizon, ))
-
-        for n in range(self.batch):
-            # Take the array of the contact sequence and split it in 4 arrays, 
-            # one for each leg
-            FL_contact_sequence = contact_sequence[n][0]
-            FR_contact_sequence = contact_sequence[n][1]
-            RL_contact_sequence = contact_sequence[n][2]
-            RR_contact_sequence = contact_sequence[n][3]
-
-            # Perform the scaling of the states and the reference
-            state, \
-            reference, \
-            constraint = self.perform_scaling(state, reference, constraint)
-
-            # Fill reference (self.states_dim+self.inputs_dim)
-            idx_ref_foot_to_assign = np.array([0, 0, 0, 0])
-            for j in range(self.horizon):
-
-                yref = np.zeros(shape=(self.states_dim + self.inputs_dim,))
-                yref[0:3] = reference['ref_position']
-                yref[3:6] = reference['ref_linear_velocity']
-                yref[6:9] = reference['ref_orientation']
-                yref[9:12] = reference['ref_angular_velocity']
-                yref[12:15] = reference['ref_foot_FL'][idx_ref_foot_to_assign[0]]
-                yref[15:18] = reference['ref_foot_FR'][idx_ref_foot_to_assign[1]]
-                yref[18:21] = reference['ref_foot_RL'][idx_ref_foot_to_assign[2]]
-                yref[21:24] = reference['ref_foot_RR'][idx_ref_foot_to_assign[3]]
-
-
-                # Update the idx_ref_foot_to_assign. Every time there is a change in the contact phase
-                # between 1 and 0, it means that the leg go into swing and a new reference is needed!!!
-                if(j > 1 and j<self.horizon-1):
-                    if(FL_contact_sequence[j+1] == 0 and FL_contact_sequence[j] == 1):
-                        if(reference['ref_foot_FL'].shape[0] > idx_ref_foot_to_assign[0]+1):
-                            idx_ref_foot_to_assign[0] += 1
-                    if(FR_contact_sequence[j+1] == 0 and FR_contact_sequence[j] == 1):
-                        if(reference['ref_foot_FR'].shape[0] > idx_ref_foot_to_assign[1]+1):
-                            idx_ref_foot_to_assign[1] += 1
-                    if(RL_contact_sequence[j+1] == 0 and RL_contact_sequence[j] == 1):
-                        if(reference['ref_foot_RL'].shape[0] > idx_ref_foot_to_assign[2]+1):
-                            idx_ref_foot_to_assign[2] += 1
-                    if(RR_contact_sequence[j+1] == 0 and RR_contact_sequence[j] == 1):
-                        if(reference['ref_foot_RR'].shape[0] > idx_ref_foot_to_assign[3]+1):
-                            idx_ref_foot_to_assign[3] += 1 
-
-
-                # Calculate the reference force z for the leg in stance
-                # It's simply mass*acc/number_of_legs_in_stance!!
-                # Force x and y are always 0
-                number_of_legs_in_stance = np.array([FL_contact_sequence[j], FR_contact_sequence[j], 
-                                                    RL_contact_sequence [j], RR_contact_sequence[j]]).sum()
-                reference_force_stance_legs = (mass * 9.81) / number_of_legs_in_stance
-                
-                reference_force_fl_z = reference_force_stance_legs * FL_contact_sequence[j]
-                reference_force_fr_z = reference_force_stance_legs * FR_contact_sequence[j]
-                reference_force_rl_z = reference_force_stance_legs * RL_contact_sequence[j]
-                reference_force_rr_z = reference_force_stance_legs * RR_contact_sequence[j]
-                yref[44] = reference_force_fl_z
-                yref[47] = reference_force_fr_z
-                yref[50] = reference_force_rl_z
-                yref[53] = reference_force_rr_z
-
-                
-                # Setting the reference to acados
-                if(self.use_DDP):
-                    if(j == 0):
-                        num_l2_penalties = self.ocp.model.cost_y_expr_0.shape[0] - (self.states_dim + self.inputs_dim)
-                    else:
-                        num_l2_penalties = self.ocp.model.cost_y_expr.shape[0] - (self.states_dim + self.inputs_dim)
-                    
-                    yref_tot = np.concatenate((yref, np.zeros(num_l2_penalties,) ))
-                    self.batch_solver.ocp_solvers[n].set(j, "yref", yref_tot)
-                else:
-                    self.batch_solver.ocp_solvers[n].set(j, "yref", yref)
-                    
-                
-
-            
-            # Fill last step horizon reference (self.states_dim - no control action!!)
-            yref_N = np.zeros(shape=(self.states_dim ,))
-            yref_N[0:3] = reference['ref_position']
-            yref_N[3:6] = reference['ref_linear_velocity']
-            yref_N[6:9] = reference['ref_orientation']
-            yref_N[9:12] = reference['ref_angular_velocity']
-            yref_N[12:15] = reference['ref_foot_FL'][idx_ref_foot_to_assign[0]]
-            yref_N[15:18] = reference['ref_foot_FR'][idx_ref_foot_to_assign[1]]
-            yref_N[18:21] = reference['ref_foot_RL'][idx_ref_foot_to_assign[2]]
-            yref_N[21:24] = reference['ref_foot_RR'][idx_ref_foot_to_assign[3]]
-            # Setting the reference to acados
-            self.batch_solver.ocp_solvers[n].set(self.horizon, "yref", yref_N)
-
-            
-            
-            # Fill stance param, friction and stance proximity 
-            # (stance proximity will disable foothold optimization near a stance!!)
-            mu = config.mpc_params['mu']
-            yaw = state["orientation"][2]
-            
-            # Stance Proximity ugly routine. Basically we disable foothold optimization
-            # in the proximity of a stance phase (the real foot cannot travel too fast in
-            # a small time!!)
-            """stance_proximity_FL = np.zeros((self.horizon, ))
-            stance_proximity_FR = np.zeros((self.horizon, ))
-            stance_proximity_RL = np.zeros((self.horizon, ))
-            stance_proximity_RR = np.zeros((self.horizon, ))
-
-            for j in range(self.horizon):
-                if(FL_contact_sequence[j] == 0):
-                    if(j+1) < self.horizon:
-                        if(FL_contact_sequence[j+1] == 1):
-                            stance_proximity_FL[j] = 1*0
-                    if(j+2) < self.horizon:
-                        if(FL_contact_sequence[j+1] == 0 and FL_contact_sequence[j+2] == 1):
-                            stance_proximity_FL[j] = 1*0
-                
-                if(FR_contact_sequence[j] == 0):
-                    if(j+1) < self.horizon:
-                        if(FR_contact_sequence[j+1] == 1):
-                            stance_proximity_FR[j] = 1*0
-                    if(j+2) < self.horizon:
-                        if(FR_contact_sequence[j+1] == 0 and FR_contact_sequence[j+2] == 1):
-                            stance_proximity_FR[j] = 1*0
-                
-                if(RL_contact_sequence[j] == 0):
-                    if(j+1) < self.horizon:
-                        if(RL_contact_sequence[j+1] == 1):
-                            stance_proximity_RL[j] = 1*0
-                    if(j+2) < self.horizon:
-                        if(RL_contact_sequence[j+1] == 0 and RL_contact_sequence[j+2] == 1):
-                            stance_proximity_RL[j] = 1*0
-                
-                if(RR_contact_sequence[j] == 0):
-                    if(j+1) < self.horizon:
-                        if(RR_contact_sequence[j+1] == 1):
-                            stance_proximity_RR[j] = 1*0
-                    if(j+2) < self.horizon:
-                        if(RR_contact_sequence[j+1] == 0 and RR_contact_sequence[j+2] == 1):
-                            stance_proximity_RR[j] = 1*0"""
-
-
-
-            # Set the parameters to  acados
-            for j in range(self.horizon):
-                # If we have estimated an external wrench, we can compensate it for all steps
-                # or less (maybe the disturbance is not costant along the horizon!)
-                if(config.mpc_params['external_wrenches_compensation'] and
-                config.mpc_params['external_wrenches_compensation_num_step'] and 
-                j < config.mpc_params['external_wrenches_compensation_num_step']):
-                    external_wrenches_estimated_param = copy.deepcopy(external_wrenches)
-                    external_wrenches_estimated_param = external_wrenches_estimated_param.reshape((6, ))
-                else:
-                    external_wrenches_estimated_param = np.zeros((6,))
-                
-
-                param = np.array([FL_contact_sequence[j], FR_contact_sequence[j], 
-                                RL_contact_sequence[j], RR_contact_sequence[j], mu, 
-                                stance_proximity_FL[j],
-                                stance_proximity_FR[j], 
-                                stance_proximity_RL[j],
-                                stance_proximity_RR[j],
-                                state["position"][0], state["position"][1], 
-                                state["position"][2], state["orientation"][2],
-                                external_wrenches_estimated_param[0], external_wrenches_estimated_param[1],
-                                external_wrenches_estimated_param[2], external_wrenches_estimated_param[3],
-                                external_wrenches_estimated_param[4], external_wrenches_estimated_param[5],
-                                inertia[0], inertia[1], inertia[2], inertia[3], inertia[4], inertia[5],
-                                inertia[6], inertia[7], inertia[8], mass])
-                self.batch_solver.ocp_solvers[n].set(j, "p", copy.deepcopy(param))
-
-            
-            
-            # Set initial state constraint. We teleported the robot foothold
-            # to the previous optimal foothold. This is done to avoid the optimization
-            # of a foothold that is not considered at all at touchdown! In any case,
-            # the height cames always from the VFA  
-            if(FL_contact_sequence[0] == 0):
-                state["foot_FL"] = reference["ref_foot_FL"][0]
-
-            if(FR_contact_sequence[0] == 0):
-                state["foot_FR"] = reference["ref_foot_FR"][0]
-
-            if(RL_contact_sequence[0] == 0):
-                state["foot_RL"] = reference["ref_foot_RL"][0]
-                
-            if(RR_contact_sequence[0] == 0):
-                state["foot_RR"] = reference["ref_foot_RR"][0]
-
-
-            """if(self.use_integrators):
-                # Compute error for integral action
-                alpha_integrator = config.mpc_params["alpha_integrator"]
-                self.integral_errors[0] += (state["position"][2] - reference["ref_position"][2])*alpha_integrator
-                self.integral_errors[1] += (state["linear_velocity"][0] - reference["ref_linear_velocity"][0])*alpha_integrator
-                self.integral_errors[2] += (state["linear_velocity"][1] - reference["ref_linear_velocity"][1])*alpha_integrator
-                self.integral_errors[3] += (state["linear_velocity"][2] - reference["ref_linear_velocity"][2])*alpha_integrator
-                self.integral_errors[4] += (state["orientation"][0] - reference["ref_orientation"][0])*(alpha_integrator)
-                self.integral_errors[5] += (state["orientation"][1] - reference["ref_orientation"][1])*alpha_integrator
-                
-
-                cap_integrator_z = config.mpc_params["integrator_cap"][0]
-                cap_integrator_x_dot = config.mpc_params["integrator_cap"][1]
-                cap_integrator_y_dot = config.mpc_params["integrator_cap"][2]
-                cap_integrator_z_dot = config.mpc_params["integrator_cap"][3]
-                cap_integrator_roll = config.mpc_params["integrator_cap"][4]
-                cap_integrator_pitch = config.mpc_params["integrator_cap"][5]
-
-                self.integral_errors[0] = np.where(np.abs(self.integral_errors[0]) > cap_integrator_z, cap_integrator_z*np.sign(self.integral_errors[0]), self.integral_errors[0])
-                self.integral_errors[1] = np.where(np.abs(self.integral_errors[1]) > cap_integrator_x_dot, cap_integrator_x_dot*np.sign(self.integral_errors[1]), self.integral_errors[1])
-                self.integral_errors[2] = np.where(np.abs(self.integral_errors[2]) > cap_integrator_y_dot, cap_integrator_y_dot*np.sign(self.integral_errors[2]), self.integral_errors[2])
-                self.integral_errors[3] = np.where(np.abs(self.integral_errors[3]) > cap_integrator_z_dot, cap_integrator_z_dot*np.sign(self.integral_errors[3]), self.integral_errors[3])
-                self.integral_errors[4] = np.where(np.abs(self.integral_errors[4]) > cap_integrator_roll, cap_integrator_roll*np.sign(self.integral_errors[4]), self.integral_errors[4])
-                self.integral_errors[5] = np.where(np.abs(self.integral_errors[5]) > cap_integrator_pitch, cap_integrator_pitch*np.sign(self.integral_errors[5]), self.integral_errors[5])
-
-                print("self.integral_errors: ", self.integral_errors)"""
-
-            # Set initial state constraint acados, converting first the dictionary to np array
-            state_acados = np.concatenate((state["position"], state["linear_velocity"],
-                                    state["orientation"], state["angular_velocity"],
-                                    state["foot_FL"], state["foot_FR"],
-                                    state["foot_RL"], state["foot_RR"],
-                                    self.integral_errors)).reshape((self.states_dim, 1))
-            self.batch_solver.ocp_solvers[n].set(0, "lbx", state_acados)
-            self.batch_solver.ocp_solvers[n].set(0, "ubx", state_acados)
-
-
-            # Set Warm start in case...
-            if(self.use_warm_start):
-                self.set_warm_start(state_acados, reference, FL_contact_sequence, FR_contact_sequence, RL_contact_sequence, RR_contact_sequence)
-
-
-            # Set stage constraint
-            if(self.use_foothold_constraints or self.use_stability_constraints):
-                h_R_w = np.array([np.cos(yaw), np.sin(yaw),
-                                -np.sin(yaw), np.cos(yaw)])
-                stance_proximity = np.vstack((stance_proximity_FL, stance_proximity_FR,
-                                                stance_proximity_RL, stance_proximity_RR))
-                self.set_stage_constraint(constraint, state, reference, contact_sequence, h_R_w, stance_proximity)
-
-            
-            # Solve ocp via RTI or normal ocp
-            if self.use_RTI:
-                # feedback phase
-                self.batch_solver.ocp_solvers[n].options_set('rti_phase', 2)    
-
-
-        # Solve the batched ocp
-        t0 = time.time()
-        self.batch_solver.solve()
-        t_elapsed = (time.time() - t0)
-        t_elapsed2 = (time.time() - start)
-
-        #print("time_python: ", t_elapsed2)
-        #print("time_solver: ", t_elapsed)
-        
-
-        for n in range(self.batch):
-            costs.append(self.batch_solver.ocp_solvers[n].get_cost())
-            # self.batch_solver.ocp_solvers[n].reset()
-
-            # print(f"Cost for OCP batch {n}: {self.batch_solver.ocp_solvers[n].get_cost()}")
-        
-        # print(costs)
-
-        return costs
-
+        return [self.solvers.ocp_solvers[n].get_cost() for n in range(self.simulations)]
+    
 
     def ocp_batch_preparation_phase(self,):
         for n in range(self.batch):
